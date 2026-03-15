@@ -1,0 +1,36 @@
+# arris-kabelbox configuration
+# Apply with: kabelbox apply config.yaml
+# Password: set KABELBOX_PASSWORD env var or use --password flag
+#
+# Developed against: Vodafone Docsis 3.1 (ARRIS TG3442DE)
+# Firmware: 01.05.063.13.EURO.SIP
+
+host: "192.168.0.1"
+
+dhcp_reservations:
+  - name: PC-Ethernet
+    mac: "AA:BB:CC:DD:EE:01"
+    ip: "192.168.0.10"
+  - name: PC-WiFi
+    mac: "AA:BB:CC:DD:EE:02"
+    ip: "192.168.0.11"
+
+  - name: Server
+    mac: "AA:BB:CC:DD:EE:03"
+    ip: "192.168.0.20"
+
+port_forwarding:
+  - name: Web-HTTP
+    protocol: TCP
+    wan_port: 80
+    lan_ip: "192.168.0.20"
+
+  - name: Web-HTTPS
+    protocol: TCP
+    wan_port: 443
+    lan_ip: "192.168.0.20"
+
+  - name: VPN-STUN
+    protocol: UDP
+    wan_port: 3478
+    lan_ip: "192.168.0.20"
