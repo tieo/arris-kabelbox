@@ -88,38 +88,33 @@ class DHCPPage(BasePage):
             log.warning("Could not find edit button for %s", mac_upper)
             return False
 
-        settle()
+        settle(2)
 
-        # The edit popup should now be open with fields pre-filled.
-        # Find the name/hostname input and update it.
-        # Try known IDs first, then fall back to scanning visible text inputs.
+        # The edit popup (LANpopUpAddDevice) is now open.
+        # The name field is id="deviceRename" (maxLength=63).
+        # Fallback: first visible text input in popup that isn't MAC/IP sized.
         renamed = self._session.execute(
             """
             var newName = arguments[0];
 
-            // Strategy 1: known input IDs for device name
-            var ids = ["hostName", "deviceName", "name", "editName"];
-            for (var i = 0; i < ids.length; i++) {
-                var el = document.getElementById(ids[i]);
-                if (el && el.getBoundingClientRect().height > 0) {
-                    el.value = newName;
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    return true;
-                }
+            // Strategy 1: known ID for the device rename field
+            var el = document.getElementById("deviceRename");
+            if (el && el.getBoundingClientRect().height > 0) {
+                el.value = newName;
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
             }
 
-            // Strategy 2: find the first visible text input in the popup
-            // (the name field is typically the first text input)
-            var popup = document.querySelector(".popup, .overlay, [class*='popup']");
-            var container = popup || document.getElementById("content");
-            if (!container) return false;
+            // Strategy 2: scan the popup for the name field
+            var popup = document.getElementById("LANpopUpAddDevice");
+            if (!popup) popup = document.querySelector(".popup");
+            if (!popup) return false;
 
-            var inputs = container.querySelectorAll("input[type='text']");
+            var inputs = popup.querySelectorAll("input[type='text']");
             for (var i = 0; i < inputs.length; i++) {
                 var inp = inputs[i];
                 if (inp.getBoundingClientRect().height > 0 &&
                     inp.maxLength !== 2 && inp.maxLength !== 3) {
-                    // Not a MAC or IP field (those have maxLength 2 or 3)
                     inp.value = newName;
                     inp.dispatchEvent(new Event('change', {bubbles: true}));
                     return true;
