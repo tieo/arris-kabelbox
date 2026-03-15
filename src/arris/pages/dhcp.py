@@ -192,8 +192,8 @@ class DHCPPage(BasePage):
         self._forms.click_button("addScheduleHome")
         settle()
 
-        # Select "New Device" by value (-1)
-        self._forms.set_chosen_dropdown("AddDevicesSelect", "-1")
+        # Select "New Device" (value is the literal string "New Device")
+        self._forms.set_chosen_dropdown("AddDevicesSelect", "New Device")
         settle()
 
         # Fill MAC and IP
