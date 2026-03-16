@@ -120,7 +120,7 @@ class RouterSession:
         self._driver.implicitly_wait(2)
         log.debug("Browser started")
 
-    @retry(max_attempts=3, delay=5.0)
+    @retry(max_attempts=6, delay=10.0)
     def login(self) -> None:
         """Authenticate with the router via its JS login function."""
         assert self._driver is not None

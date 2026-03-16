@@ -7,9 +7,12 @@ import os
 import sys
 
 import click
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
+
+load_dotenv()
 
 from .config import load_config
 from .core.session import RouterSession
