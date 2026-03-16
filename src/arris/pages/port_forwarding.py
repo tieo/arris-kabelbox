@@ -301,7 +301,7 @@ class PortForwardingPage(BasePage):
         self.navigate()
         final = self.list_rules()
         final_set = {(r.protocol, r.wan_port, r.lan_ip): r for r in final}
-        missing = set(desired_set.keys()) - final_set
+        missing = set(desired_set.keys()) - set(final_set.keys())
         if missing:
             for key in missing:
                 rule = desired_set[key]

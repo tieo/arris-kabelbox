@@ -1,18 +1,15 @@
-"""Custom Selenium wait conditions for the slow ARRIS router."""
+"""Selenium wait conditions for the ARRIS router."""
 
 from __future__ import annotations
 
 import logging
-import time
 
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
 
 log = logging.getLogger(__name__)
 
-# The router is extremely slow. These floors are non-negotiable.
-MIN_SETTLE = 2.0
-DEFAULT_TIMEOUT = 20.0
+DEFAULT_TIMEOUT = 10.0
 
 
 class ElementVisible:
@@ -72,17 +69,6 @@ class ContentLoaded:
         )
 
 
-class NavigationPresent:
-    """Wait until the main navigation bar is rendered (confirms login)."""
-
-    def __call__(self, driver: WebDriver) -> bool:
-        return driver.execute_script(
-            """
-            return document.querySelectorAll("[id^='navigation-item-']").length > 0;
-            """
-        )
-
-
 class TableHasRows:
     """Wait until a table has at least one data row."""
 
@@ -113,80 +99,29 @@ class LoggedIn:
         )
 
 
-class NoSpinner:
-    """Wait until any loading spinner / overlay is gone."""
-
-    def __call__(self, driver: WebDriver) -> bool:
-        return driver.execute_script(
-            """
-            var spinners = document.querySelectorAll(
-                ".loading, .spinner, [class*='loading'], [class*='spinner']"
-            );
-            for (var i = 0; i < spinners.length; i++) {
-                if (spinners[i].getBoundingClientRect().height > 0) return false;
-            }
-            return true;
-            """
-        )
-
-
-class AjaxComplete:
-    """Wait until jQuery has no active AJAX requests."""
-
-    def __call__(self, driver: WebDriver) -> bool:
-        return driver.execute_script(
-            """
-            if (typeof jQuery === 'undefined') return true;
-            return jQuery.active === 0;
-            """
-        )
-
-
-def settle(seconds: float = MIN_SETTLE) -> None:
-    """Hard sleep floor.
-
-    The router genuinely needs this. Actions performed too quickly
-    after a page transition silently fail or hit stale elements.
-    """
-    time.sleep(max(seconds, MIN_SETTLE))
+def settle(seconds: float = 0) -> None:
+    """No-op. Kept for API compatibility."""
 
 
 def wait_ready(driver: WebDriver, timeout: float = DEFAULT_TIMEOUT) -> None:
-    """Wait until the page is fully interactive.
-
-    Polls for content, spinners, and AJAX completion, then enforces
-    a minimum settle floor because the router's JS is unreliable
-    even after all observable indicators say "ready".
-    """
-    start = time.monotonic()
+    """Wait for the page content to load."""
+    log.debug("Waiting for content to load (timeout=%.1fs)", timeout)
     try:
         WebDriverWait(driver, timeout).until(ContentLoaded())
+        log.debug("Content loaded")
     except Exception:
-        log.debug("ContentLoaded timed out after %.1fs", timeout)
-    try:
-        WebDriverWait(driver, 5.0).until(NoSpinner())
-    except Exception:
-        pass
-    try:
-        WebDriverWait(driver, 5.0).until(AjaxComplete())
-    except Exception:
-        pass
-    # Enforce minimum settle floor
-    elapsed = time.monotonic() - start
-    remaining = MIN_SETTLE - elapsed
-    if remaining > 0:
-        time.sleep(remaining)
+        log.debug("Content load timed out")
 
 
 def wait_for_element(
     driver: WebDriver, element_id: str, timeout: float = DEFAULT_TIMEOUT
 ) -> bool:
-    """Wait until a specific element exists in the DOM.
-
-    Returns True if found, False on timeout.
-    """
+    """Wait until a specific element exists in the DOM."""
+    log.debug("Waiting for element #%s (timeout=%.1fs)", element_id, timeout)
     try:
         WebDriverWait(driver, timeout).until(ElementExists(element_id))
+        log.debug("Element #%s found", element_id)
         return True
     except Exception:
+        log.debug("Element #%s not found", element_id)
         return False

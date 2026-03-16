@@ -39,14 +39,16 @@ def _get_password(password: str | None) -> str:
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging")
 @click.option("-H", "--host", default="192.168.0.1", help="Router IP address")
 @click.option("-p", "--password", default=None, help="Router password (or KABELBOX_PASSWORD env)")
+@click.option("--no-headless", is_flag=True, help="Show the browser window (disable headless mode)")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, host: str, password: str | None) -> None:
+def cli(ctx: click.Context, verbose: bool, host: str, password: str | None, no_headless: bool) -> None:
     """Declarative ARRIS/Vodafone Kabelbox router configuration management."""
     _setup_logging(verbose)
     ctx.ensure_object(dict)
     ctx.obj["host"] = host
     ctx.obj["password"] = password
     ctx.obj["verbose"] = verbose
+    ctx.obj["headless"] = not no_headless
 
 
 # --- Port Forwarding ---
@@ -64,7 +66,7 @@ def ports_list(ctx: click.Context) -> None:
     from .pages.port_forwarding import PortForwardingPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = PortForwardingPage(session)
         page.navigate()
         rules = page.list_rules()
@@ -103,7 +105,7 @@ def ports_add(
         lan_port=lan_port or wan_port, lan_ip=lan_ip,
     )
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = PortForwardingPage(session)
         page.navigate()
         page.add_rule(rule)
@@ -118,7 +120,7 @@ def ports_delete(ctx: click.Context, name: str) -> None:
     from .pages.port_forwarding import PortForwardingPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = PortForwardingPage(session)
         page.navigate()
         if page.delete_rule(name):
@@ -142,7 +144,7 @@ def dhcp_list(ctx: click.Context) -> None:
     from .pages.dhcp import DHCPPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = DHCPPage(session)
         page.navigate()
         leases = page.list_leases()
@@ -170,7 +172,7 @@ def dhcp_add(ctx: click.Context, name: str, mac: str, ip: str) -> None:
 
     lease = DHCPLease(name=name, mac=mac, ip=ip)
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = DHCPPage(session)
         page.navigate()
         page.add_lease(lease)
@@ -193,7 +195,7 @@ def wifi_status(ctx: click.Context) -> None:
     from .pages.wifi import WifiGeneralPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = WifiGeneralPage(session)
         page.navigate()
         status = page.get_status()
@@ -220,7 +222,7 @@ def wifi_ssid(ctx: click.Context, name: str) -> None:
     from .pages.wifi import WifiGeneralPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = WifiGeneralPage(session)
         page.navigate()
         page.set_ssid(name)
@@ -234,7 +236,7 @@ def wifi_mac_filter(ctx: click.Context) -> None:
     from .pages.wifi import WifiMacFilterPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = WifiMacFilterPage(session)
         page.navigate()
         macs = page.list_allowed_macs()
@@ -262,7 +264,7 @@ def firewall_status(ctx: click.Context) -> None:
     from .pages.firewall import FirewallPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = FirewallPage(session)
         page.navigate()
         status = page.get_status()
@@ -285,7 +287,7 @@ def status_cmd(ctx: click.Context) -> None:
     from .pages.status import OverviewPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = OverviewPage(session)
         page.navigate()
         devices = page.get_connected_devices()
@@ -313,7 +315,7 @@ def info_cmd(ctx: click.Context) -> None:
     from .pages.device import AboutPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = AboutPage(session)
         page.navigate()
         info = page.get_info()
@@ -339,7 +341,7 @@ def log_cmd(ctx: click.Context) -> None:
     from .pages.device import EventLogPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = EventLogPage(session)
         page.navigate()
         entries = page.get_log_entries()
@@ -364,7 +366,7 @@ def ddns_cmd(ctx: click.Context) -> None:
     from .pages.network import DynDNSPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = DynDNSPage(session)
         page.navigate()
         config = page.get_config()
@@ -409,7 +411,7 @@ def apply_cmd(ctx: click.Context, config_file: str, dry_run: bool) -> None:
         return
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(host, pw) as session:
+    with RouterSession(host, pw, headless=ctx.obj["headless"]) as session:
         if desired_dhcp:
             from .pages.dhcp import DHCPPage
 
@@ -456,7 +458,7 @@ def restart_cmd(ctx: click.Context, yes: bool) -> None:
     from .pages.device import RestartPage
 
     pw = _get_password(ctx.obj["password"])
-    with RouterSession(ctx.obj["host"], pw) as session:
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = RestartPage(session)
         page.navigate()
         page.restart(confirm=True)

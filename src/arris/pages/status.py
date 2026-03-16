@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from ..core.waits import wait_ready
+from selenium.webdriver.support.ui import WebDriverWait
+
+from ..core.waits import ContentLoaded, wait_ready
 from .base import BasePage
 
 log = logging.getLogger(__name__)
@@ -27,6 +29,35 @@ class RouterStatus:
     devices: list[ConnectedDevice]
 
 
+# JS that waits for #content to have device data and scrapes it.
+# Returns null if content not ready yet (for use with WebDriverWait).
+_SCRAPE_DEVICES_JS = """
+var content = document.getElementById("content");
+if (!content || content.textContent.trim().length < 20) return null;
+
+var result = [];
+var sections = content.innerHTML.split(/Name:/g);
+for (var i = 1; i < sections.length; i++) {
+    var s = sections[i];
+    var nameMatch = s.match(/^\\s*([^<]+)/);
+    var ipMatch = s.match(/IPv4:\\s*([\\d.]+)/);
+    var macMatch = s.match(/MAC:\\s*([\\da-fA-F:]+)/);
+    var wlanMatch = s.match(/WLAN:\\s*([^<]+)/);
+    var speedMatch = s.match(/(Link Rate|Geschwindigkeit):\\s*([^<]+)/);
+    if (nameMatch && ipMatch && macMatch) {
+        result.push({
+            name: nameMatch[1].trim(),
+            ip: ipMatch[1].trim(),
+            mac: macMatch[1].trim().toUpperCase(),
+            connection: wlanMatch ? 'WiFi ' + wlanMatch[1].trim() : 'LAN',
+            speed: speedMatch ? speedMatch[2].trim() : ''
+        });
+    }
+}
+return result.length > 0 ? result : null;
+"""
+
+
 class StatusPage(BasePage):
     """Read router status and connected devices."""
 
@@ -34,33 +65,14 @@ class StatusPage(BasePage):
 
     def get_connected_devices(self) -> list[ConnectedDevice]:
         """List all devices connected to the router."""
-        raw = self._session.execute(
-            """
-            var content = document.getElementById("content");
-            if (!content) return [];
+        log.debug("Scraping connected devices")
+        driver = self._session.driver
+        timeout = self._session._page_timeout
 
-            var result = [];
-            var sections = content.innerHTML.split(/Name:/g);
-            for (var i = 1; i < sections.length; i++) {
-                var s = sections[i];
-                var nameMatch = s.match(/^\\s*([^<]+)/);
-                var ipMatch = s.match(/IPv4:\\s*([\\d.]+)/);
-                var macMatch = s.match(/MAC:\\s*([\\da-fA-F:]+)/);
-                var wlanMatch = s.match(/WLAN:\\s*([^<]+)/);
-                var speedMatch = s.match(/(Link Rate|Geschwindigkeit):\\s*([^<]+)/);
-                if (nameMatch && ipMatch && macMatch) {
-                    result.push({
-                        name: nameMatch[1].trim(),
-                        ip: ipMatch[1].trim(),
-                        mac: macMatch[1].trim().toUpperCase(),
-                        connection: wlanMatch ? 'WiFi ' + wlanMatch[1].trim() : 'LAN',
-                        speed: speedMatch ? speedMatch[2].trim() : ''
-                    });
-                }
-            }
-            return result;
-            """
+        raw = WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script(_SCRAPE_DEVICES_JS)
         )
+        log.debug("Found %d devices", len(raw))
         return [
             ConnectedDevice(
                 name=d["name"],
@@ -88,8 +100,9 @@ class OverviewPage(BasePage):
     PAGE_MID = ""  # It's the default page
 
     def navigate(self) -> None:
+        log.debug("Navigating to overview")
         self._session.execute("go('overview');")
-        wait_ready(self._session.driver)
+        wait_ready(self._session.driver, self._session._page_timeout)
 
     def get_connected_devices(self) -> list[ConnectedDevice]:
         """Same as StatusPage but from the overview."""

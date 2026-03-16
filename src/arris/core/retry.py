@@ -13,7 +13,7 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 
-from .exceptions import RouterTimeoutError, SessionExpiredError
+from .exceptions import LoginError, RouterTimeoutError, SessionExpiredError
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ RECOVERABLE = (
     StaleElementReferenceException,
     WebDriverException,
     RouterTimeoutError,
+    LoginError,
 )
 
 

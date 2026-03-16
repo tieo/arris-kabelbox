@@ -12,10 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .exceptions import LoginError, NavigationError, SessionExpiredError
 from .retry import retry
-from .waits import (
-    ContentLoaded, LoggedIn, NavigationPresent,
-    settle, wait_ready, wait_for_element,
-)
+from .waits import wait_ready, wait_for_element
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +49,7 @@ PAGE_ROUTES: dict[str, str] = {
 
 
 class RouterSession:
-    """Manages a headless browser session with the ARRIS router.
+    """Manages a browser session with the ARRIS router.
 
     Usage::
 
@@ -85,7 +82,6 @@ class RouterSession:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         if exc_type is not None:
-            # Save debug screenshot on any unhandled error
             try:
                 self.screenshot(
                     f"{self._screenshot_dir}/arris-error-{int(time.time())}.png"
@@ -114,7 +110,7 @@ class RouterSession:
         return f"http://{self.host}"
 
     def _start_browser(self) -> None:
-        log.info("Starting headless Firefox")
+        log.info("Starting Firefox%s", " (headless)" if self._headless else "")
         opts = Options()
         if self._headless:
             opts.add_argument("--headless")
@@ -122,15 +118,18 @@ class RouterSession:
         self._driver = webdriver.Firefox(options=opts)
         self._driver.set_page_load_timeout(self._page_timeout)
         self._driver.implicitly_wait(2)
+        log.debug("Browser started")
 
     @retry(max_attempts=3, delay=5.0)
     def login(self) -> None:
         """Authenticate with the router via its JS login function."""
         assert self._driver is not None
         log.info("Logging in to %s", self.url)
+        login_start = time.monotonic()
 
+        log.debug("Loading router page")
         self._driver.get(self.url)
-        self._wait_for_page_ready()
+        self._wait_for_js()
 
         # Check if already logged in
         if self._is_logged_in():
@@ -140,43 +139,39 @@ class RouterSession:
             return
 
         # Execute the router's own login function — it handles SJCL crypto.
+        log.debug("Executing login function")
         result = self._driver.execute_script(
             'return login("admin", arguments[0]);', self._password
         )
+        log.debug("Login function returned: %s", result)
 
-        if not result:
-            self._driver.get(self.url)
-            self._wait_for_page_ready()
-            if not self._is_logged_in():
-                raise LoginError("Login returned false — wrong password or locked out")
-
-        # Reload and verify login persisted.
-        self._driver.get(self.url)
-        self._wait_for_page_ready()
-
-        if not self._is_logged_in():
-            raise LoginError("Session did not persist after reload")
-
-        # Wait for navigation to appear (confirms full page load).
+        # Wait for the server to actually establish the session.
+        # login() returns immediately but the AJAX round-trip takes time.
+        log.debug("Waiting for session to be established")
         try:
-            WebDriverWait(self._driver, self._page_timeout).until(
-                NavigationPresent()
+            WebDriverWait(self._driver, 10).until(
+                lambda d: d.execute_script(
+                    "return typeof isLoggedIn === 'function' && isLoggedIn();"
+                )
             )
+            log.debug("Session established")
         except Exception:
-            log.debug("Navigation elements not found, but login confirmed")
+            if not result:
+                raise LoginError("Login returned false — wrong password or locked out")
+            raise LoginError("Login function returned true but session was not established")
 
         self._ensure_expert_mode()
         self._touch()
-        log.info("Login successful")
+        log.info("Login successful (%.1fs)", time.monotonic() - login_start)
 
-    def _wait_for_page_ready(self) -> None:
-        """Wait for the page to become fully interactive after a load.
+    def _wait_for_js(self) -> None:
+        """Wait for the router's JS to initialize after a page load.
 
-        The router's JS takes several seconds to initialize even after
-        the DOM is ready. We poll for the login/isLoggedIn functions,
-        then add a settle floor because the router's session state
-        takes additional time to become consistent.
+        We need the login/isLoggedIn functions to exist before we can
+        call them. driver.get() waits for DOMContentLoaded but not for
+        all scripts to execute.
         """
+        log.debug("Waiting for JS functions")
         try:
             WebDriverWait(self._driver, self._page_timeout).until(
                 lambda d: d.execute_script(
@@ -186,30 +181,28 @@ class RouterSession:
                     """
                 )
             )
+            log.debug("JS functions available")
         except Exception:
-            log.warning("Page did not become interactive within timeout")
-        # The router genuinely needs this — session state isn't consistent
-        # until several seconds after the JS functions appear.
-        settle(4)
+            log.warning("JS functions not found within timeout")
 
     def _is_logged_in(self) -> bool:
-        return self._driver.execute_script(
+        result = self._driver.execute_script(
             "return typeof isLoggedIn === 'function' && isLoggedIn();"
         )
+        log.debug("isLoggedIn() = %s", result)
+        return result
 
     def _ensure_expert_mode(self) -> None:
-        """Switch to Expert mode if not already there.
-
-        Expert mode (value "2") shows all navigation items.
-        Standard mode (value "1") hides many pages and renumbers nav IDs.
-        """
+        """Switch to Expert mode if not already there."""
         current = self._driver.execute_script(
             """
             var sel = document.getElementById("userModeSelect");
             return sel ? sel.value : null;
             """
         )
+        log.debug("Current mode: %s", current)
         if current == "2":
+            log.debug("Already in Expert mode")
             return
 
         log.info("Switching to Expert mode (was %s)", current)
@@ -226,27 +219,15 @@ class RouterSession:
             }
             """
         )
-        # Expert mode switch reloads navigation — wait for it.
-        settle(3)
-        try:
-            WebDriverWait(self._driver, self._page_timeout).until(
-                ContentLoaded()
-            )
-        except Exception:
-            pass
 
     def navigate(self, page_mid: str, wait_for: str | None = None) -> None:
         """Navigate to a page by its mid parameter.
 
-        This is mode-independent. Uses the sub-navigation link href matching
-        with URL fallback. Always waits for full page readiness before returning.
-
         Args:
             page_mid: The mid parameter value, e.g. "NetPortMapping".
-            wait_for: Optional element ID to wait for after navigation
-                      (ensures page-specific content is loaded).
+            wait_for: Optional element ID to wait for after navigation.
         """
-        log.debug("Navigating to %s", page_mid)
+        log.info("Navigating to %s", page_mid)
 
         # Try clicking the matching nav link by scanning all sub-nav items
         clicked = self.driver.execute_script(
@@ -265,7 +246,6 @@ class RouterSession:
         )
 
         if not clicked:
-            # Fallback: direct URL navigation using known route
             route = PAGE_ROUTES.get(page_mid)
             if route:
                 log.debug("Nav link not found, falling back to URL: %s", route)
@@ -273,25 +253,23 @@ class RouterSession:
             else:
                 raise NavigationError(f"Unknown page mid: {page_mid}")
 
-        # Wait for the page to be fully ready
         wait_ready(self._driver, self._page_timeout)
 
-        # If a specific element is expected, wait for it too
         if wait_for:
             if not wait_for_element(self._driver, wait_for, self._page_timeout):
                 log.warning("Element #%s not found after navigating to %s", wait_for, page_mid)
 
         self._touch()
+        log.debug("Navigation to %s complete", page_mid)
 
     def apply(self) -> None:
         """Click the page-level Apply button and wait for the router to save."""
-        log.debug("Clicking Apply")
+        log.info("Clicking Apply")
         self.driver.execute_script(
             'document.getElementById("applyButton").click();'
         )
-        # Apply triggers a save round-trip — the router is very slow here.
-        settle(3)
         # Wait for any loading overlay to disappear
+        log.debug("Waiting for overlay to clear")
         try:
             WebDriverWait(self._driver, 15).until(
                 lambda d: d.execute_script(
@@ -301,9 +279,9 @@ class RouterSession:
                     """
                 )
             )
+            log.debug("Overlay cleared")
         except Exception:
-            pass
-        settle(2)
+            log.debug("Overlay wait timed out")
         self._touch()
 
     def execute(self, script: str, *args) -> object:
