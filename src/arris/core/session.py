@@ -12,7 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .exceptions import LoginError, NavigationError, SessionExpiredError
 from .retry import retry
-from .waits import wait_ready, wait_for_element
+from .waits import wait_ajax, wait_ready, wait_for_element
 
 log = logging.getLogger(__name__)
 
@@ -299,6 +299,12 @@ class RouterSession:
         """
         log.info("Navigating to %s", page_mid)
 
+        # Mark current content so we can detect when SPA replaces it.
+        self._driver.execute_script(
+            "var c = document.getElementById('content');"
+            "if(c) c.setAttribute('data-stale', 'true');"
+        )
+
         # Try clicking the matching nav link by scanning all sub-nav items
         clicked = self.driver.execute_script(
             """
@@ -323,7 +329,22 @@ class RouterSession:
             else:
                 raise NavigationError(f"Unknown page mid: {page_mid}")
 
-        wait_ready(self._driver, self._page_timeout)
+        # Wait for SPA to replace the stale content with fresh content,
+        # AND for all AJAX to complete.
+        try:
+            WebDriverWait(self._driver, self._page_timeout).until(
+                lambda d: d.execute_script(
+                    """
+                    var c = document.getElementById('content');
+                    if (!c || c.hasAttribute('data-stale')) return false;
+                    if (c.children.length === 0) return false;
+                    var jq = typeof jQuery === 'undefined' || jQuery.active === 0;
+                    return jq;
+                    """
+                )
+            )
+        except Exception:
+            log.warning("Navigation wait timed out for %s", page_mid)
 
         if wait_for:
             if not wait_for_element(self._driver, wait_for, self._page_timeout):
@@ -335,23 +356,28 @@ class RouterSession:
     def apply(self) -> None:
         """Click the page-level Apply button and wait for the router to save."""
         log.info("Clicking Apply")
+        wait_ajax(self._driver)  # wait for any pending AJAX before clicking
         self.driver.execute_script(
             'document.getElementById("applyButton").click();'
         )
-        # Wait for any loading overlay to disappear
-        log.debug("Waiting for overlay to clear")
+        # Wait for the save operation to complete:
+        # 1. Brief pause for the AJAX to start
+        # 2. Wait for jQuery AJAX to finish
+        # 3. Wait for any overlay to disappear
+        time.sleep(1.0)
         try:
-            WebDriverWait(self._driver, 15).until(
+            WebDriverWait(self._driver, 30).until(
                 lambda d: d.execute_script(
                     """
+                    var jq = typeof jQuery === 'undefined' || jQuery.active === 0;
                     var overlay = document.querySelector('.loading-overlay, .overlay');
-                    return !overlay || overlay.getBoundingClientRect().height === 0;
+                    var noOverlay = !overlay || overlay.getBoundingClientRect().height === 0;
+                    return jq && noOverlay;
                     """
                 )
             )
-            log.debug("Overlay cleared")
         except Exception:
-            log.debug("Overlay wait timed out")
+            log.warning("Apply wait timed out")
         self._touch()
 
     def execute(self, script: str, *args) -> object:

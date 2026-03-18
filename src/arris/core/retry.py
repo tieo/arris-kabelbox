@@ -13,7 +13,13 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 
-from .exceptions import LoginError, RouterTimeoutError, SessionExpiredError
+from .exceptions import (
+    ApplyError,
+    FormError,
+    LoginError,
+    RouterTimeoutError,
+    SessionExpiredError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +31,8 @@ RECOVERABLE = (
     WebDriverException,
     RouterTimeoutError,
     LoginError,
+    FormError,  # includes PopupError
+    ApplyError,
 )
 
 

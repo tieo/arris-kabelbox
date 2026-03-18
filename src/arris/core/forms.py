@@ -12,7 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .exceptions import FormError, PopupError
 from .session import RouterSession
-from .waits import ElementHidden, ElementVisible, settle
+from .waits import ElementHidden, ElementVisible, settle, wait_ajax
 
 log = logging.getLogger(__name__)
 
@@ -110,11 +110,11 @@ class FormHelper:
         )
 
     def click_button(self, element_id: str) -> None:
-        """Click a button by ID."""
+        """Click a button by ID, waiting for AJAX to settle first."""
+        wait_ajax(self._session.driver)
         self._session.execute(
             "document.getElementById(arguments[0]).click();", element_id
         )
-        settle(1)
 
     def wait_popup_open(self, save_button_id: str, timeout: float = 15) -> None:
         """Wait for a popup to become visible by checking its save button."""

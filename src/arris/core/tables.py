@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from .session import RouterSession
-from .waits import settle
+from .waits import settle, wait_ajax
 
 log = logging.getLogger(__name__)
 
@@ -152,7 +152,10 @@ class TableHelper:
             if not found:
                 break
             deleted += 1
-            settle(1.5)
+            import time
+            time.sleep(0.5)  # let delete AJAX start
+            wait_ajax(self._session.driver)
+            settle(0.5)
         return deleted
 
     def count_rows(self, *, row_selector: str = "table tr", min_columns: int = 2) -> int:

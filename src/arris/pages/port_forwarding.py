@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Sequence
 
 from ..core.exceptions import ApplyError, PopupError
 from ..core.retry import retry
-from ..core.waits import settle, wait_ready
+from ..core.waits import settle, wait_ajax, wait_ready
 from ..models.port_rule import PortRule
 from .base import BasePage
 
@@ -79,13 +80,16 @@ class PortForwardingPage(BasePage):
                 log.warning("Skipping malformed rule %r: %s", r, exc)
         return rules
 
-    def _set_rule_enabled(self, row_index: int, enabled: bool) -> bool:
+    def _set_rule_enabled(self, toggle_id: str, enabled: bool) -> bool:
         """Toggle the enable switch on a rule row.
 
         The toggle is a <div id="mRowOnOff{N}"> with class "button-on" or "button-off"
-        and aria-checked="true"/"false".
+        and aria-checked="true"/"false".  The click triggers an AJAX save automatically.
+
+        Args:
+            toggle_id: The actual DOM element ID of the toggle (e.g. "mRowOnOff0").
+            enabled: Desired state.
         """
-        toggle_id = f"mRowOnOff{row_index}"
         changed = self._session.execute(
             """
             var toggle = document.getElementById(arguments[0]);
@@ -99,8 +103,9 @@ class PortForwardingPage(BasePage):
             enabled,
         )
         if changed:
-            settle()
-            log.info("Toggled rule row %d -> %s", row_index, "enabled" if enabled else "disabled")
+            time.sleep(0.5)  # let toggle AJAX start
+            wait_ajax(self._session.driver)
+            log.info("Toggled %s -> %s", toggle_id, "enabled" if enabled else "disabled")
         return changed
 
     def enable_rule_by_match(self, protocol: str, wan_port: int, lan_ip: str, enabled: bool = True) -> bool:
@@ -135,7 +140,10 @@ class PortForwardingPage(BasePage):
                     and row["ip"] == lan_ip):
                 if row["isOn"] == enabled:
                     return False  # already correct
-                return self._set_rule_enabled(row["index"], enabled)
+                if not row["toggleId"]:
+                    log.warning("No toggle element for %s:%d -> %s", protocol, wan_port, lan_ip)
+                    return False
+                return self._set_rule_enabled(row["toggleId"], enabled)
         log.warning("No rule found for %s:%d -> %s", protocol, wan_port, lan_ip)
         return False
 
@@ -203,21 +211,22 @@ class PortForwardingPage(BasePage):
         # Verify: reload page and check the rule is actually there
         self.navigate()
         after = self.list_rules()
-        found = any(
-            r.protocol == rule.protocol and r.wan_port == rule.wan_port and r.lan_ip == rule.lan_ip
-            for r in after
-        )
-        if not found:
+        found_rule = None
+        for r in after:
+            if r.protocol == rule.protocol and r.wan_port == rule.wan_port and r.lan_ip == rule.lan_ip:
+                found_rule = r
+                break
+        if not found_rule:
             raise ApplyError(
                 f"Rule {rule.name} not found after apply (router silently dropped it)"
             )
 
-        # Enable the rule (newly added rules are disabled by default)
-        if rule.enabled:
+        # Router adds rules as disabled by default — toggle if needed
+        if rule.enabled and not found_rule.enabled:
             self.enable_rule_by_match(rule.protocol, rule.wan_port, rule.lan_ip, True)
             self.apply()
 
-        log.info("Verified: rule %s is saved and %s", rule.name, "enabled" if rule.enabled else "disabled")
+        log.info("Verified: rule %s is saved", rule.name)
 
     def delete_rule(self, name: str) -> bool:
         """Delete a rule by name. Returns True if found."""
@@ -227,7 +236,8 @@ class PortForwardingPage(BasePage):
             row_selector="tr[id^='mRow']",
         )
         if found:
-            settle()
+            time.sleep(0.5)  # let delete AJAX start
+            wait_ajax(self._session.driver)
             self.apply()
             log.info("Deleted port rule: %s", name)
         return found
@@ -267,10 +277,9 @@ class PortForwardingPage(BasePage):
                     log.error("Failed to delete %s: %s", rule.name, exc)
                     result["errors"].append(f"delete {rule.name}: {exc}")
 
-        # Add rules not in current (add_rule handles its own navigation and verification)
+        # Add missing rules (add_rule handles its own navigation and apply)
         for key, rule in desired_set.items():
-            existing = current_set.get(key)
-            if not existing:
+            if key not in current_set:
                 log.info("Adding missing rule: %s", rule.name)
                 try:
                     self.add_rule(rule)
@@ -278,8 +287,17 @@ class PortForwardingPage(BasePage):
                 except Exception as exc:
                     log.error("Failed to add %s: %s", rule.name, exc)
                     result["errors"].append(f"add {rule.name}: {exc}")
-            else:
-                # Rule exists — check enabled state
+
+        # Toggle enabled state on a fresh page.
+        # Always re-read after any changes to get current toggle states.
+        self.navigate()
+        settle(1.0)  # let the page fully render after navigation
+        current = self.list_rules()
+        current_set = {(r.protocol, r.wan_port, r.lan_ip): r for r in current}
+
+        for key, rule in desired_set.items():
+            existing = current_set.get(key)
+            if existing:
                 if existing.enabled != rule.enabled:
                     try:
                         changed = self.enable_rule_by_match(
@@ -293,12 +311,15 @@ class PortForwardingPage(BasePage):
                 else:
                     result["unchanged"] += 1
 
-        # Apply if any toggles were changed
+        # Apply if any toggles were changed (toggle AJAX changes session state,
+        # apply persists to the router's config).
         if result["toggled"] > 0:
+            wait_ajax(self._session.driver)
             self.apply()
 
         # Final verification: reload and compare
         self.navigate()
+        settle(1.0)
         final = self.list_rules()
         final_set = {(r.protocol, r.wan_port, r.lan_ip): r for r in final}
         missing = set(desired_set.keys()) - set(final_set.keys())
@@ -310,9 +331,8 @@ class PortForwardingPage(BasePage):
                 result["errors"].append(msg)
 
         # Verify enabled state
-        final_by_key = {(r.protocol, r.wan_port, r.lan_ip): r for r in final}
         for key, rule in desired_set.items():
-            actual = final_by_key.get(key)
+            actual = final_set.get(key)
             if actual and actual.enabled != rule.enabled:
                 msg = f"WRONG STATE after sync: {rule.name} expected {'enabled' if rule.enabled else 'disabled'}"
                 log.warning(msg)

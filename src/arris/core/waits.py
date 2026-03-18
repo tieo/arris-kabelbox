@@ -99,8 +99,22 @@ class LoggedIn:
         )
 
 
-def settle(seconds: float = 0) -> None:
-    """No-op. Kept for API compatibility."""
+def settle(seconds: float = 0.5) -> None:
+    """Brief pause to let the router UI settle after an interaction."""
+    import time
+    time.sleep(seconds)
+
+
+def wait_ajax(driver: WebDriver, timeout: float = 10.0) -> None:
+    """Wait for all jQuery AJAX requests to complete."""
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script(
+                "return typeof jQuery === 'undefined' || jQuery.active === 0;"
+            )
+        )
+    except Exception:
+        pass
 
 
 def wait_ready(driver: WebDriver, timeout: float = DEFAULT_TIMEOUT) -> None:
