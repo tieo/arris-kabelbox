@@ -2,7 +2,7 @@
 name = "arris-kabelbox"
 version = "0.1.0"
 description = "Declarative configuration management for ARRIS/Vodafone Kabelbox routers"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "selenium>=4.15",
     "click>=8.1",

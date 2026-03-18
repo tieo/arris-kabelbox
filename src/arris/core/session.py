@@ -130,11 +130,12 @@ class RouterSession:
         log.debug("Loading router page")
         self._driver.get(self.url)
         self._wait_for_js()
+        self._wait_for_init()
 
         # Check if already logged in
         if self._is_logged_in():
             log.info("Already logged in")
-            self._ensure_expert_mode()
+            self._navigate_to_dashboard()
             self._touch()
             return
 
@@ -160,9 +161,39 @@ class RouterSession:
                 raise LoginError("Login returned false — wrong password or locked out")
             raise LoginError("Login function returned true but session was not established")
 
-        self._ensure_expert_mode()
+        self._navigate_to_dashboard()
         self._touch()
         log.info("Login successful (%.1fs)", time.monotonic() - login_start)
+
+    def _navigate_to_dashboard(self) -> None:
+        """Navigate from the login page to the main dashboard.
+
+        The login page is a separate UI where go()/navigate don't work.
+        Loading ?overview transitions to the dashboard and waits for it
+        to fully initialize.  Retries up to 3 times on failure.
+        """
+        for attempt in range(3):
+            log.debug("Navigating to dashboard (attempt %d)", attempt + 1)
+            try:
+                self._driver.get(f"{self.url}/?overview")
+            except Exception:
+                log.warning("Dashboard page load timed out, retrying")
+                continue
+            self._wait_for_js()
+
+            try:
+                self._wait_for_init(on_dashboard=True)
+            except LoginError:
+                log.warning("Dashboard init failed, retrying")
+                continue
+
+            if not self._is_logged_in():
+                raise LoginError("Session lost after navigating to dashboard")
+
+            self._ensure_expert_mode()
+            return
+
+        raise LoginError("Dashboard failed to load after 3 attempts")
 
     def _wait_for_js(self) -> None:
         """Wait for the router's JS to initialize after a page load.
@@ -184,6 +215,43 @@ class RouterSession:
             log.debug("JS functions available")
         except Exception:
             log.warning("JS functions not found within timeout")
+
+    def _wait_for_init(self, on_dashboard: bool = False) -> None:
+        """Wait for the router's page initialization to finish.
+
+        The router runs checkInitialStatus on load which may call logout()
+        via doSessionClean. We must wait for all init AJAX to complete
+        before proceeding, otherwise our session gets destroyed.
+
+        Args:
+            on_dashboard: If True, wait for the #content div to appear
+                (reliable signal that the dashboard has fully initialized).
+                If False, just wait for jQuery AJAX to settle.
+        """
+        if on_dashboard:
+            log.debug("Waiting for dashboard to fully initialize")
+            try:
+                WebDriverWait(self._driver, self._page_timeout).until(
+                    lambda d: d.execute_script(
+                        "var c = document.getElementById('content');"
+                        "var jq = typeof jQuery !== 'undefined' && jQuery.active === 0;"
+                        "return c && c.children.length > 0 && jq;"
+                    )
+                )
+                log.debug("Dashboard initialized")
+            except Exception:
+                raise LoginError("Dashboard failed to initialize")
+        else:
+            log.debug("Waiting for router init to complete (jQuery.active == 0)")
+            try:
+                WebDriverWait(self._driver, 15).until(
+                    lambda d: d.execute_script(
+                        "return typeof jQuery !== 'undefined' && jQuery.active === 0;"
+                    )
+                )
+                log.debug("Router init complete")
+            except Exception:
+                log.debug("Router init wait timed out, proceeding anyway")
 
     def _is_logged_in(self) -> bool:
         result = self._driver.execute_script(
@@ -219,6 +287,8 @@ class RouterSession:
             }
             """
         )
+        # Mode switch triggers AJAX page rebuild — wait for it to finish
+        self._wait_for_init()
 
     def navigate(self, page_mid: str, wait_for: str | None = None) -> None:
         """Navigate to a page by its mid parameter.
@@ -248,8 +318,8 @@ class RouterSession:
         if not clicked:
             route = PAGE_ROUTES.get(page_mid)
             if route:
-                log.debug("Nav link not found, falling back to URL: %s", route)
-                self._driver.get(f"{self.url}/?{route}")
+                log.debug("Nav link not found, falling back to go(): %s", route)
+                self._driver.execute_script("go(arguments[0]);", route)
             else:
                 raise NavigationError(f"Unknown page mid: {page_mid}")
 

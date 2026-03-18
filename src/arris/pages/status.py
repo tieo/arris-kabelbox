@@ -101,8 +101,25 @@ class OverviewPage(BasePage):
 
     def navigate(self) -> None:
         log.debug("Navigating to overview")
-        self._session.execute("go('overview');")
-        wait_ready(self._session.driver, self._session._page_timeout)
+        driver = self._session.driver
+        timeout = self._session._page_timeout
+
+        # Check if already on the overview page (login lands us here)
+        already = driver.execute_script(
+            "var el = document.getElementById('overview_lists');"
+            "return el && el.textContent.trim().length > 20;"
+        )
+        if not already:
+            driver.execute_script("go('overview');")
+
+        # Wait for the overview device list to appear
+        log.debug("Waiting for overview_lists (timeout=%.1fs)", timeout)
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script(
+                "var el = document.getElementById('overview_lists');"
+                "return el && el.textContent.trim().length > 20;"
+            )
+        )
 
     def get_connected_devices(self) -> list[ConnectedDevice]:
         """Same as StatusPage but from the overview."""
