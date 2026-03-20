@@ -116,7 +116,7 @@ class RouterSession:
             opts.add_argument("--headless")
         opts.set_preference("dom.webdriver.enabled", False)
         self._driver = webdriver.Firefox(options=opts)
-        self._driver.set_page_load_timeout(15)
+        self._driver.set_page_load_timeout(self._page_timeout)
         self._driver.implicitly_wait(2)
         log.debug("Browser started")
 
@@ -177,15 +177,12 @@ class RouterSession:
         """
         for attempt in range(3):
             log.debug("Navigating to dashboard (attempt %d)", attempt + 1)
-            self._driver.set_page_load_timeout(15)
             try:
                 self._driver.get(f"{self.url}/?overview")
             except Exception:
                 log.warning("Dashboard page load timed out, retrying")
                 self._stop_load()
                 continue
-            finally:
-                self._driver.set_page_load_timeout(15)
             self._wait_for_js()
 
             try:
@@ -252,7 +249,7 @@ class RouterSession:
         else:
             log.debug("Waiting for router init to complete (jQuery.active == 0)")
             try:
-                WebDriverWait(self._driver, 15).until(
+                WebDriverWait(self._driver, self._page_timeout).until(
                     lambda d: d.execute_script(
                         "return typeof jQuery !== 'undefined' && jQuery.active === 0;"
                     )
