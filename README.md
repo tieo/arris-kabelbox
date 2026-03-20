@@ -26,10 +26,12 @@ Andere Firmware-Versionen oder Modelle der ARRIS 950-Familie funktionieren event
 ## Installation
 
 ```bash
-uv tool install .
+uv tool install --python "<3.14" .
 # oder
 pip install .
 ```
+
+> **Hinweis:** Pydantic unterstützt derzeit kein Python 3.14. Falls `python3.14` dein Standard-Interpreter ist, muss `--python "<3.14"` angegeben werden.
 
 ## Benutzung
 
