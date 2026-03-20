@@ -177,9 +177,7 @@ class RouterSession:
         """
         for attempt in range(3):
             log.debug("Navigating to dashboard (attempt %d)", attempt + 1)
-            # Use a shorter timeout for dashboard loads to fail fast on
-            # an overwhelmed router instead of blocking for 15s each retry.
-            self._driver.set_page_load_timeout(8)
+            self._driver.set_page_load_timeout(15)
             try:
                 self._driver.get(f"{self.url}/?overview")
             except Exception:
@@ -411,15 +409,7 @@ class RouterSession:
         try:
             self._driver.execute_script("window.stop();")
         except Exception:
-            # Browser may be completely stuck — navigate to a blank page
-            # with a short timeout to force-clear the state.
-            try:
-                self._driver.set_page_load_timeout(3)
-                self._driver.get("about:blank")
-            except Exception:
-                pass
-            finally:
-                self._driver.set_page_load_timeout(15)
+            pass
 
     def _touch(self) -> None:
         self._last_activity = time.monotonic()
