@@ -116,16 +116,19 @@ class RouterSession:
             opts.add_argument("--headless")
         opts.set_preference("dom.webdriver.enabled", False)
         self._driver = webdriver.Firefox(options=opts)
-        self._driver.set_page_load_timeout(self._page_timeout)
+        self._driver.set_page_load_timeout(15)
         self._driver.implicitly_wait(2)
         log.debug("Browser started")
 
-    @retry(max_attempts=6, delay=10.0)
+    @retry(max_attempts=6, delay=5.0)
     def login(self) -> None:
         """Authenticate with the router via its JS login function."""
         assert self._driver is not None
         log.info("Logging in to %s", self.url)
         login_start = time.monotonic()
+
+        # Abort any stuck page load from a previous failed attempt
+        self._stop_load()
 
         log.debug("Loading router page")
         self._driver.get(self.url)
@@ -174,17 +177,24 @@ class RouterSession:
         """
         for attempt in range(3):
             log.debug("Navigating to dashboard (attempt %d)", attempt + 1)
+            # Use a shorter timeout for dashboard loads to fail fast on
+            # an overwhelmed router instead of blocking for 15s each retry.
+            self._driver.set_page_load_timeout(8)
             try:
                 self._driver.get(f"{self.url}/?overview")
             except Exception:
                 log.warning("Dashboard page load timed out, retrying")
+                self._stop_load()
                 continue
+            finally:
+                self._driver.set_page_load_timeout(15)
             self._wait_for_js()
 
             try:
                 self._wait_for_init(on_dashboard=True)
             except LoginError:
                 log.warning("Dashboard init failed, retrying")
+                self._stop_load()
                 continue
 
             if not self._is_logged_in():
@@ -395,6 +405,21 @@ class RouterSession:
             self._driver.save_screenshot(path)
             log.info("Screenshot saved to %s", path)
         return path
+
+    def _stop_load(self) -> None:
+        """Abort any in-progress page load to unblock the browser."""
+        try:
+            self._driver.execute_script("window.stop();")
+        except Exception:
+            # Browser may be completely stuck — navigate to a blank page
+            # with a short timeout to force-clear the state.
+            try:
+                self._driver.set_page_load_timeout(3)
+                self._driver.get("about:blank")
+            except Exception:
+                pass
+            finally:
+                self._driver.set_page_load_timeout(15)
 
     def _touch(self) -> None:
         self._last_activity = time.monotonic()
