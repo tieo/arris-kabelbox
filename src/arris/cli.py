@@ -177,10 +177,28 @@ def dhcp_add(ctx: click.Context, name: str, mac: str, ip: str) -> None:
     pw = _get_password(ctx.obj["password"])
     with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = DHCPPage(session)
-        page.navigate()
         page.add_lease(lease)
         page.apply()
     console.print(f"[green]Added: {name} {mac} -> {ip}")
+
+
+@dhcp_group.command("delete")
+@click.option("--mac", required=True, help="MAC address of the lease to delete")
+@click.pass_context
+def dhcp_delete(ctx: click.Context, mac: str) -> None:
+    """Delete a static DHCP reservation by MAC address."""
+    from .pages.dhcp import DHCPPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = DHCPPage(session)
+        page.navigate()
+        found = page.delete_lease_by_mac(mac)
+        if found:
+            page.apply()
+            console.print(f"[green]Deleted: {mac.upper()}")
+        else:
+            console.print(f"[yellow]Not found: {mac.upper()}")
 
 
 # --- WiFi ---

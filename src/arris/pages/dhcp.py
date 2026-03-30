@@ -161,10 +161,73 @@ class DHCPPage(BasePage):
         log.info("Renamed %s to %s", mac_upper, new_name)
         return True
 
+    def _add_lease_in_place(self, lease: DHCPLease, max_attempts: int = 3) -> None:
+        """Add a lease without navigating — assumes the page is already at SettingsLan.
+
+        Retries by closing and reopening the popup without reloading the page.
+        Use this inside sync() to avoid losing staged deletes on navigation.
+        """
+        for attempt in range(1, max_attempts + 1):
+            # Ensure the add button is visible before clicking (page may still be loading)
+            from selenium.webdriver.support.ui import WebDriverWait
+            try:
+                from ..core.waits import ElementVisible
+                WebDriverWait(self._session.driver, 15).until(ElementVisible("addScheduleHome"))
+            except Exception:
+                log.warning("addScheduleHome button not visible (attempt %d)", attempt)
+
+            # Open add popup
+            self._forms.click_button("addScheduleHome")
+            settle()
+
+            # Select "New Device"
+            self._forms.set_chosen_dropdown("AddDevicesSelect", "New Device")
+            settle()
+
+            # Fill MAC and IP
+            self._forms.fill_mac_fields(lease.mac)
+            self._forms.fill_ip_fields(lease.ip)
+
+            # Save
+            self._forms.click_button("saveButton")
+            settle()
+
+            # Check if popup closed (success)
+            still_open = self._session.execute(
+                """
+                var btn = document.getElementById("saveButton");
+                return btn && btn.getBoundingClientRect().height > 0;
+                """
+            )
+            if not still_open:
+                # Success — rename from auto-generated name to desired name
+                self._rename_lease(lease.mac, lease.name)
+                log.info("Added lease in-place: %s %s -> %s", lease.name, lease.mac, lease.ip)
+                return
+
+            # Close popup and retry
+            self._session.execute(
+                """
+                var btn = document.getElementById("cancelButton");
+                if (btn) btn.click();
+                """
+            )
+            settle()
+            if attempt < max_attempts:
+                log.warning(
+                    "_add_lease_in_place attempt %d/%d failed for %s, retrying in 2s",
+                    attempt, max_attempts, lease.mac,
+                )
+                settle(2.0)
+
+        raise ApplyError(f"Failed to add DHCP lease {lease.mac} after {max_attempts} attempts")
+
     @retry(max_attempts=3, delay=5.0)
     def add_lease(self, lease: DHCPLease) -> None:
-        """Add a static DHCP reservation and set its name.
+        """Add a static DHCP reservation (standalone — navigates for clean state).
 
+        Idempotent: if the lease already exists with the correct IP, renames if needed.
+        If the lease exists with a wrong IP, deletes+applies first then re-adds.
         On retry, re-navigates to get a clean page state.
         """
         log.info("Adding DHCP lease: %s %s -> %s", lease.name, lease.mac, lease.ip)
@@ -175,56 +238,61 @@ class DHCPPage(BasePage):
         # Check if lease already exists (idempotent)
         existing = self.list_leases()
         for l in existing:
-            if l.mac == lease.mac.upper():
+            if l.mac == lease.mac:
                 if l.ip == lease.ip:
-                    # Right MAC and IP, but check name
+                    # Right MAC and IP — check name
                     if l.name != lease.name:
                         self._rename_lease(lease.mac, lease.name)
                     else:
                         log.info("Lease already exists: %s", lease.mac)
                     return
-                # Wrong IP, need to delete and re-add
-                log.info("Lease exists with wrong IP (%s), deleting first", l.ip)
+                # Wrong IP: delete, apply to persist, then re-add
+                log.info("Lease exists with wrong IP (%s), deleting and applying", l.ip)
                 self.delete_lease_by_mac(lease.mac)
-                self.navigate()
+                self.apply()
+                # Fall through to add below
 
-        # Open add popup
-        self._forms.click_button("addScheduleHome")
-        settle()
+        self._add_lease_in_place(lease)
 
-        # Select "New Device" (value is the literal string "New Device")
-        self._forms.set_chosen_dropdown("AddDevicesSelect", "New Device")
-        settle()
+    def _navigate_with_recovery(self, max_attempts: int = 5) -> bool:
+        """Navigate to SettingsLan, retrying and re-logging-in if the router
+        session is dropped (which happens after a DHCP apply).
 
-        # Fill MAC and IP
-        self._forms.fill_mac_fields(lease.mac)
-        self._forms.fill_ip_fields(lease.ip)
-
-        # Save
-        self._forms.click_button("saveButton")
-        settle()
-
-        # Check if popup is still open (error)
-        still_open = self._session.execute(
-            """
-            var btn = document.getElementById("saveButton");
-            return btn && btn.getBoundingClientRect().height > 0;
-            """
-        )
-        if still_open:
-            self._session.execute(
+        Returns True if the page became ready, False if all attempts failed.
+        """
+        for attempt in range(1, max_attempts + 1):
+            self.navigate()
+            settle(1.0)
+            page_ready = self._session.execute(
                 """
-                var btn = document.getElementById("cancelButton");
-                if (btn) btn.click();
+                var btn = document.getElementById("addScheduleHome");
+                return btn && btn.getBoundingClientRect().height > 0;
                 """
             )
-            raise ApplyError(f"Failed to save DHCP lease {lease.mac}")
-
-        # Now rename from "StaticDeviceN" to the desired name
-        self._rename_lease(lease.mac, lease.name)
+            if page_ready:
+                return True
+            log.warning("SettingsLan not ready (attempt %d/%d)", attempt, max_attempts)
+            # Re-login if the session was dropped by the router
+            try:
+                logged_in = self._session.execute(
+                    "return typeof isLoggedIn === 'function' && isLoggedIn();"
+                )
+            except Exception:
+                logged_in = False
+            if not logged_in:
+                log.info("Session lost — re-logging in")
+                try:
+                    self._session.login()
+                except Exception as exc:
+                    log.warning("Re-login failed: %s", exc)
+            settle(3.0)
+        return False
 
     def delete_lease_by_mac(self, mac: str) -> bool:
-        """Delete a lease by matching its MAC in the table."""
+        """Delete a lease by matching its MAC in the table.
+
+        Note: this stages the delete in the DOM — call apply() to persist.
+        """
         mac_upper = mac.upper()
         found = self._session.execute(
             """
@@ -245,7 +313,7 @@ class DHCPPage(BasePage):
         )
         if found:
             settle()
-            log.info("Deleted DHCP lease: %s", mac)
+            log.info("Staged delete for DHCP lease: %s", mac)
         return found
 
     def delete_all(self) -> int:
@@ -258,62 +326,98 @@ class DHCPPage(BasePage):
     def sync(self, desired: Sequence[DHCPLease]) -> dict:
         """Converge DHCP leases to the desired state.
 
-        After all changes, applies once and verifies final state.
-        Also renames any leases whose name doesn't match.
+        Uses a two-phase approach to avoid IP conflicts:
+        - Phase 1: Delete all stale/conflicting entries, then apply.
+        - Phase 2: Navigate fresh, add all missing entries without page reloads
+                   between them (to avoid losing staged changes), then apply.
+        - Verify final state.
+
+        Renames any leases whose name doesn't match.
         """
+        self.navigate()
         current = self.list_leases()
         result = {"added": 0, "deleted": 0, "unchanged": 0, "renamed": 0, "errors": []}
 
+        # Use normalized MACs (DHCPLease.__post_init__ already uppercases)
         desired_by_mac = {lease.mac: lease for lease in desired}
         current_by_mac = {lease.mac: lease for lease in current}
 
-        # Delete leases not in desired
-        to_delete = set(current_by_mac) - set(desired_by_mac)
-        for mac in to_delete:
+        # Determine which IPs are being freshly claimed (will change hands)
+        ips_being_claimed: set[str] = set()
+        for mac, lease in desired_by_mac.items():
+            cur = current_by_mac.get(mac)
+            if cur is None or cur.ip != lease.ip:
+                ips_being_claimed.add(lease.ip)
+
+        # --- Phase 1: collect and delete stale/conflicting entries ---
+        # Delete if:
+        #   - not in desired at all
+        #   - in desired but at different IP (will be re-added at correct IP)
+        #   - occupying an IP that another desired entry claims (different MAC)
+        macs_to_delete: set[str] = set()
+        for mac, cur in current_by_mac.items():
+            des = desired_by_mac.get(mac)
+            if des is None:
+                macs_to_delete.add(mac)
+            elif des.ip != cur.ip:
+                macs_to_delete.add(mac)
+        # Also clear any entry (different MAC) squatting on an IP we're claiming
+        for mac, cur in current_by_mac.items():
+            if mac not in macs_to_delete and cur.ip in ips_being_claimed:
+                macs_to_delete.add(mac)
+
+        for mac in macs_to_delete:
             try:
-                self.delete_lease_by_mac(mac)
-                result["deleted"] += 1
+                found = self.delete_lease_by_mac(mac)
+                if found:
+                    result["deleted"] += 1
+                else:
+                    log.warning("Could not stage delete for %s (not found in table)", mac)
             except Exception as exc:
                 log.error("Failed to delete lease %s: %s", mac, exc)
                 result["errors"].append(f"delete {mac}: {exc}")
 
-        # Add leases not in current (or with wrong IP)
+        if result["deleted"] > 0:
+            self.apply()
+            # Router often resets its web session after a DHCP apply — wait for it
+            settle(8.0)
+
+        # --- Phase 2: add missing entries (no navigation between adds) ---
+        self._navigate_with_recovery()
+        current2 = self.list_leases()
+        current2_by_mac = {lease.mac: lease for lease in current2}
+
+        needs_apply = False
         for mac, lease in desired_by_mac.items():
-            existing = current_by_mac.get(mac)
+            existing = current2_by_mac.get(mac)
             if existing and existing.ip == lease.ip:
-                # Right MAC and IP, check name
                 if existing.name != lease.name:
                     try:
                         self._rename_lease(mac, lease.name)
                         result["renamed"] += 1
+                        needs_apply = True
                     except Exception as exc:
                         log.error("Failed to rename %s: %s", mac, exc)
                         result["errors"].append(f"rename {mac}: {exc}")
                 else:
                     result["unchanged"] += 1
                 continue
-            if existing:
-                try:
-                    self.delete_lease_by_mac(mac)
-                    result["deleted"] += 1
-                except Exception as exc:
-                    log.error("Failed to delete stale lease %s: %s", mac, exc)
-                    result["errors"].append(f"delete stale {mac}: {exc}")
-                    continue
 
+            # Need to add (or re-add at new IP)
             try:
-                self.add_lease(lease)
+                self._add_lease_in_place(lease)
                 result["added"] += 1
+                needs_apply = True
             except Exception as exc:
                 log.error("Failed to add lease %s: %s", lease.mac, exc)
                 result["errors"].append(f"add {lease.mac}: {exc}")
 
-        # Apply all changes at once
-        if result["added"] > 0 or result["deleted"] > 0 or result["renamed"] > 0:
+        if needs_apply:
             self.apply()
+            settle(8.0)
 
-        # Verify final state
-        self.navigate()
+        # --- Verify final state ---
+        self._navigate_with_recovery()
         final = self.list_leases()
         final_by_mac = {l.mac: l for l in final}
         for mac, lease in desired_by_mac.items():
@@ -327,8 +431,10 @@ class DHCPPage(BasePage):
                 log.error(msg)
                 result["errors"].append(msg)
             elif actual.name != lease.name:
-                msg = f"WRONG NAME after sync: {mac} expected {lease.name!r} got {actual.name!r}"
-                log.warning(msg)
+                log.warning(
+                    "WRONG NAME after sync: %s expected %r got %r",
+                    mac, lease.name, actual.name,
+                )
 
         log.info(
             "DHCP sync: +%d -%d ~%d =%d",

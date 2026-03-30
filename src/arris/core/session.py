@@ -371,7 +371,7 @@ class RouterSession:
         # 3. Wait for any overlay to disappear
         time.sleep(1.0)
         try:
-            WebDriverWait(self._driver, 30).until(
+            WebDriverWait(self._driver, 60).until(
                 lambda d: d.execute_script(
                     """
                     var jq = typeof jQuery === 'undefined' || jQuery.active === 0;
