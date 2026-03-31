@@ -201,6 +201,69 @@ def dhcp_delete(ctx: click.Context, mac: str) -> None:
             console.print(f"[yellow]Not found: {mac.upper()}")
 
 
+@dhcp_group.command("server")
+@click.pass_context
+def dhcp_server_status(ctx: click.Context) -> None:
+    """Show DHCP server status."""
+    from .pages.dhcp import DHCPPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = DHCPPage(session)
+        status = page.get_dhcp_server_status()
+
+    table = Table(title="DHCP Server Status")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value")
+
+    state = "[green]enabled" if status.enabled else "[red]disabled"
+    table.add_row("DHCP Server", state)
+    table.add_row("Pool Start", status.pool_start)
+    table.add_row("Pool End", status.pool_end)
+    table.add_row("Gateway", status.gateway)
+    table.add_row("Netmask", status.netmask)
+
+    console.print(table)
+
+
+@dhcp_group.command("server-enable")
+@click.pass_context
+def dhcp_server_enable(ctx: click.Context) -> None:
+    """Enable the DHCP server on the router."""
+    from .pages.dhcp import DHCPPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = DHCPPage(session)
+        status = page.set_dhcp_server_enabled(True)
+    console.print(f"[green]DHCP server enabled (verified: {status.enabled})")
+
+
+@dhcp_group.command("server-disable")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def dhcp_server_disable(ctx: click.Context, yes: bool) -> None:
+    """Disable the DHCP server on the router.
+
+    WARNING: Disabling DHCP means devices on this network will not get
+    IP addresses automatically unless another DHCP server is running.
+    """
+    from .pages.dhcp import DHCPPage
+
+    if not yes:
+        if not click.confirm(
+            "Disabling DHCP means no device will get an IP from this router. "
+            "Make sure another DHCP server is running. Continue?"
+        ):
+            return
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = DHCPPage(session)
+        status = page.set_dhcp_server_enabled(False)
+    console.print(f"[green]DHCP server disabled (verified: {status.enabled is False})")
+
+
 # --- WiFi ---
 
 

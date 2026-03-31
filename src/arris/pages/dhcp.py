@@ -1,17 +1,42 @@
-"""Static DHCP lease management page object."""
+"""Static DHCP lease management and server toggle page object."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Sequence
 
-from ..core.exceptions import ApplyError
+from ..core.exceptions import ApplyError, FormError
 from ..core.retry import retry
 from ..core.waits import settle
 from ..models.dhcp_lease import DHCPLease
 from .base import BasePage
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class DHCPServerStatus:
+    """Snapshot of the DHCP server configuration."""
+
+    pool_start: str  # e.g. "192.168.0.2"
+    pool_end: str  # e.g. "192.168.0.253"
+    gateway: str  # e.g. "192.168.0.1"
+    netmask: str  # e.g. "255.255.255.0"
+
+    @property
+    def enabled(self) -> bool:
+        """DHCP is effectively enabled if the pool covers more than one IP."""
+        return self.pool_start != self.pool_end
+
+
+# The Kabelbox has no DHCP on/off toggle. "Disabling" means shrinking the
+# pool to a single unused IP so no client can get an address.
+_DISABLED_IP = "192.168.0.254"
+
+# Default pool range when re-enabling.
+_DEFAULT_POOL_START = "192.168.0.2"
+_DEFAULT_POOL_END = "192.168.0.253"
 
 
 class DHCPPage(BasePage):
@@ -23,6 +48,132 @@ class DHCPPage(BasePage):
     def navigate(self) -> None:
         """Navigate to DHCP page and wait for add button."""
         self._session.navigate(self.PAGE_MID, wait_for=self._WAIT_FOR)
+
+    def _read_ip_field(self, prefix: str) -> str:
+        """Read a 4-octet IP from fields like startip1..startip4."""
+        octets = []
+        for i in range(1, 5):
+            val = self._session.execute(
+                "var el = document.getElementById(arguments[0]);"
+                "return el ? el.value : '';",
+                f"{prefix}{i}",
+            )
+            octets.append(str(val))
+        return ".".join(octets)
+
+    def _write_ip_field(self, prefix: str, ip: str) -> None:
+        """Write a 4-octet IP to fields like startip1..startip4.
+
+        The Kabelbox tracks field state via jQuery keypress/keyup handlers,
+        so we must simulate real key events rather than just setting .value.
+        """
+        parts = ip.split(".")
+        if len(parts) != 4:
+            raise FormError(f"Invalid IP: {ip}")
+        for i, part in enumerate(parts, 1):
+            field_id = f"{prefix}{i}"
+            self._session.execute(
+                """
+                var el = document.getElementById(arguments[0]);
+                if (!el) throw new Error('Field not found: ' + arguments[0]);
+                el.focus();
+                // Select all existing text so it gets replaced
+                el.select();
+                """,
+                field_id,
+            )
+            # Use Selenium send_keys for real key events
+            from selenium.webdriver.common.by import By
+            element = self._session.driver.find_element(By.ID, field_id)
+            element.clear()
+            element.send_keys(part)
+
+    def get_dhcp_server_status(self) -> DHCPServerStatus:
+        """Read the DHCP server pool range from the SettingsLan page."""
+        self.navigate()
+        return DHCPServerStatus(
+            pool_start=self._read_ip_field("startip"),
+            pool_end=self._read_ip_field("endip"),
+            gateway=self._read_ip_field("langwip"),
+            netmask=self._read_ip_field("netmask"),
+        )
+
+    def set_dhcp_pool(self, start: str, end: str) -> DHCPServerStatus:
+        """Set the DHCP pool range, apply, and verify.
+
+        To effectively disable DHCP, set both start and end to the same
+        unused IP (e.g. 192.168.0.254).
+        """
+        self.navigate()
+
+        current_start = self._read_ip_field("startip")
+        current_end = self._read_ip_field("endip")
+
+        if current_start == start and current_end == end:
+            log.info("DHCP pool already set to %s - %s", start, end)
+            return DHCPServerStatus(
+                pool_start=start, pool_end=end,
+                gateway=self._read_ip_field("langwip"),
+                netmask=self._read_ip_field("netmask"),
+            )
+
+        log.info("Setting DHCP pool: %s - %s (was %s - %s)",
+                 start, end, current_start, current_end)
+
+        self._write_ip_field("startip", start)
+        self._write_ip_field("endip", end)
+        settle()
+        self.apply()
+        settle(3.0)
+
+        # Verify
+        verify = self.get_dhcp_server_status()
+        if verify.pool_start != start or verify.pool_end != end:
+            raise FormError(
+                f"DHCP pool verification failed: expected {start}-{end}, "
+                f"got {verify.pool_start}-{verify.pool_end}"
+            )
+
+        log.info("DHCP pool set to %s - %s", start, end)
+        return verify
+
+    @retry(max_attempts=3, delay=5.0)
+    def set_dhcp_server_enabled(self, enabled: bool) -> DHCPServerStatus:
+        """Enable or effectively disable the DHCP server.
+
+        The Kabelbox has no DHCP on/off toggle. Disabling works by:
+        1. Deleting all static DHCP leases (required — the router refuses
+           to shrink the pool if any static IP falls outside it)
+        2. Shrinking the pool to a single unused IP (192.168.0.254)
+
+        Enabling restores the default pool (192.168.0.2 - 192.168.0.253).
+        """
+        status = self.get_dhcp_server_status()
+
+        if enabled and status.enabled:
+            log.info("DHCP server already enabled (pool %s - %s)",
+                     status.pool_start, status.pool_end)
+            return status
+
+        if not enabled and not status.enabled:
+            log.info("DHCP server already disabled (pool %s - %s)",
+                     status.pool_start, status.pool_end)
+            return status
+
+        if enabled:
+            return self.set_dhcp_pool(_DEFAULT_POOL_START, _DEFAULT_POOL_END)
+        else:
+            # Must delete all static leases first — router rejects pool
+            # shrink if any static IP falls outside the new range.
+            self.navigate()
+            leases = self.list_leases()
+            if leases:
+                log.info("Deleting %d static leases before disabling DHCP", len(leases))
+                deleted = self.delete_all()
+                if deleted > 0:
+                    self.apply()
+                    settle(8.0)
+            return self.set_dhcp_pool(_DISABLED_IP, _DISABLED_IP)
 
     def list_leases(self) -> list[DHCPLease]:
         """Read all current static DHCP leases."""
