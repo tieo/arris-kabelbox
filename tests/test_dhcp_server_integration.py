@@ -94,13 +94,11 @@ class TestReadDHCPStatus:
         assert s1.pool_end == s2.pool_end
         assert s1.gateway == s2.gateway
 
-    def test_enabled_property(self, dhcp_page):
-        """enabled is True when start != end (normal pool)."""
+    def test_enabled_from_toggle(self, dhcp_page):
+        """enabled is read from the router's toggle element."""
         status = dhcp_page.get_dhcp_server_status()
-        if status.pool_start != status.pool_end:
-            assert status.enabled is True
-        else:
-            assert status.enabled is False
+        assert isinstance(status.enabled, bool)
+        print(f"\nDHCP server enabled={status.enabled}")
 
 
 class TestReadLeases:
@@ -296,26 +294,6 @@ class TestDHCPPoolManipulation:
         assert result.pool_end == original.pool_end
         print(f"\nIdempotent set_dhcp_pool took {elapsed:.1f}s")
 
-    def test_disable_and_reenable(self, dhcp_page):
-        """Disable (delete leases + shrink pool) then re-enable.
-
-        WARNING: This deletes all static DHCP leases on the router!
-        They will NOT be restored — the Kabelbox requires lease deletion
-        before allowing pool shrink. Only run this when you're actually
-        migrating DHCP to another server.
-        """
-        pytest.skip(
-            "Destructive: deletes all DHCP leases. "
-            "Run manually with: kabelbox dhcp server-disable --yes"
-        )
-
-    def test_disable_idempotent(self, dhcp_page):
-        """Calling disable when already disabled is a no-op."""
-        pytest.skip(
-            "Requires DHCP to already be disabled. "
-            "Run after kabelbox dhcp server-disable --yes"
-        )
-
     def test_leases_survive_pool_change(self, dhcp_page):
         """Static leases survive a pool range change (within valid range)."""
         dhcp_page.navigate()
@@ -334,3 +312,90 @@ class TestDHCPPoolManipulation:
             print(f"\n{len(before)} leases survived pool change")
         finally:
             dhcp_page.set_dhcp_pool(original.pool_start, original.pool_end)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("KABELBOX_WRITE_TEST"),
+    reason="Set KABELBOX_WRITE_TEST=1 to run write tests",
+)
+class TestDHCPServerToggle:
+    """Test the real DHCP server enable/disable toggle.
+
+    Uses the div#dhcp_server_enabled toggle element. Always restores
+    the original state after toggling.
+    """
+
+    def test_disable_and_reenable(self, dhcp_page):
+        """Toggle DHCP off then back on, verifying each state."""
+        original = dhcp_page.get_dhcp_server_status()
+        if not original.enabled:
+            pytest.skip("DHCP already disabled — enable it first")
+
+        try:
+            # Disable
+            result = dhcp_page.set_dhcp_server_enabled(False)
+            assert result.enabled is False
+            print(f"\nDisabled: enabled={result.enabled}")
+
+            # Verify it persisted after re-reading
+            check = dhcp_page.get_dhcp_server_status()
+            assert check.enabled is False
+        finally:
+            # Re-enable
+            restored = dhcp_page.set_dhcp_server_enabled(True)
+            assert restored.enabled is True
+            print(f"Re-enabled: enabled={restored.enabled}")
+
+    def test_enable_idempotent(self, dhcp_page):
+        """Enabling when already enabled is a no-op."""
+        status = dhcp_page.get_dhcp_server_status()
+        if not status.enabled:
+            pytest.skip("DHCP is disabled — can't test enable idempotency")
+
+        start = time.monotonic()
+        result = dhcp_page.set_dhcp_server_enabled(True)
+        elapsed = time.monotonic() - start
+
+        assert result.enabled is True
+        print(f"\nIdempotent enable took {elapsed:.1f}s")
+
+    def test_disable_idempotent(self, dhcp_page):
+        """Disabling when already disabled is a no-op."""
+        original = dhcp_page.get_dhcp_server_status()
+        if not original.enabled:
+            pytest.skip("DHCP already disabled")
+
+        try:
+            dhcp_page.set_dhcp_server_enabled(False)
+
+            start = time.monotonic()
+            result = dhcp_page.set_dhcp_server_enabled(False)
+            elapsed = time.monotonic() - start
+
+            assert result.enabled is False
+            print(f"\nIdempotent disable took {elapsed:.1f}s")
+        finally:
+            dhcp_page.set_dhcp_server_enabled(True)
+
+    def test_leases_survive_toggle(self, dhcp_page):
+        """Static leases are preserved after disable+enable cycle."""
+        dhcp_page.navigate()
+        before = {l.mac: l.ip for l in dhcp_page.list_leases()}
+        if not before:
+            pytest.skip("No leases to test")
+
+        original = dhcp_page.get_dhcp_server_status()
+        if not original.enabled:
+            pytest.skip("DHCP already disabled")
+
+        try:
+            dhcp_page.set_dhcp_server_enabled(False)
+            dhcp_page.set_dhcp_server_enabled(True)
+
+            dhcp_page.navigate()
+            after = {l.mac: l.ip for l in dhcp_page.list_leases()}
+            assert before == after, f"Leases changed! {before} vs {after}"
+            print(f"\n{len(before)} leases survived toggle cycle")
+        finally:
+            if not dhcp_page.get_dhcp_server_status().enabled:
+                dhcp_page.set_dhcp_server_enabled(True)

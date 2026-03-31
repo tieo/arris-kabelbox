@@ -23,20 +23,7 @@ class DHCPServerStatus:
     pool_end: str  # e.g. "192.168.0.253"
     gateway: str  # e.g. "192.168.0.1"
     netmask: str  # e.g. "255.255.255.0"
-
-    @property
-    def enabled(self) -> bool:
-        """DHCP is effectively enabled if the pool covers more than one IP."""
-        return self.pool_start != self.pool_end
-
-
-# The Kabelbox has no DHCP on/off toggle. "Disabling" means shrinking the
-# pool to a single unused IP so no client can get an address.
-_DISABLED_IP = "192.168.0.254"
-
-# Default pool range when re-enabling.
-_DEFAULT_POOL_START = "192.168.0.2"
-_DEFAULT_POOL_END = "192.168.0.253"
+    enabled: bool = True  # read from the router's toggle element
 
 
 class DHCPPage(BasePage):
@@ -88,22 +75,40 @@ class DHCPPage(BasePage):
             element.clear()
             element.send_keys(part)
 
+    def _read_toggle_enabled(self) -> bool:
+        """Read the DHCP server toggle state from the div element.
+
+        The Kabelbox uses a custom ``<div id="dhcp_server_enabled">`` toggle:
+        - ``class="button button-on"`` when enabled
+        - ``class="button button-off"`` when disabled
+
+        Note: the ``value`` attribute is NOT reliable — it can stay ``"true"``
+        even when the toggle is off. The CSS class is the source of truth.
+        """
+        classes = self._session.execute(
+            """
+            var el = document.getElementById("dhcp_server_enabled");
+            return el ? el.className : null;
+            """
+        )
+        if classes is None:
+            log.warning("dhcp_server_enabled toggle not found, assuming enabled")
+            return True
+        return "button-on" in classes
+
     def get_dhcp_server_status(self) -> DHCPServerStatus:
-        """Read the DHCP server pool range from the SettingsLan page."""
+        """Read the DHCP server status from the SettingsLan page."""
         self.navigate()
         return DHCPServerStatus(
             pool_start=self._read_ip_field("startip"),
             pool_end=self._read_ip_field("endip"),
             gateway=self._read_ip_field("langwip"),
             netmask=self._read_ip_field("netmask"),
+            enabled=self._read_toggle_enabled(),
         )
 
     def set_dhcp_pool(self, start: str, end: str) -> DHCPServerStatus:
-        """Set the DHCP pool range, apply, and verify.
-
-        To effectively disable DHCP, set both start and end to the same
-        unused IP (e.g. 192.168.0.254).
-        """
+        """Set the DHCP pool range, apply, and verify."""
         self.navigate()
 
         current_start = self._read_ip_field("startip")
@@ -115,6 +120,7 @@ class DHCPPage(BasePage):
                 pool_start=start, pool_end=end,
                 gateway=self._read_ip_field("langwip"),
                 netmask=self._read_ip_field("netmask"),
+                enabled=self._read_toggle_enabled(),
             )
 
         log.info("Setting DHCP pool: %s - %s (was %s - %s)",
@@ -139,41 +145,44 @@ class DHCPPage(BasePage):
 
     @retry(max_attempts=3, delay=5.0)
     def set_dhcp_server_enabled(self, enabled: bool) -> DHCPServerStatus:
-        """Enable or effectively disable the DHCP server.
+        """Enable or disable the DHCP server via the router's toggle.
 
-        The Kabelbox has no DHCP on/off toggle. Disabling works by:
-        1. Deleting all static DHCP leases (required — the router refuses
-           to shrink the pool if any static IP falls outside it)
-        2. Shrinking the pool to a single unused IP (192.168.0.254)
-
-        Enabling restores the default pool (192.168.0.2 - 192.168.0.253).
+        The Kabelbox uses a custom div toggle (``#dhcp_server_enabled``).
+        Clicking it toggles between on and off. We then apply to persist.
         """
         status = self.get_dhcp_server_status()
 
         if enabled and status.enabled:
-            log.info("DHCP server already enabled (pool %s - %s)",
-                     status.pool_start, status.pool_end)
+            log.info("DHCP server already enabled")
             return status
 
         if not enabled and not status.enabled:
-            log.info("DHCP server already disabled (pool %s - %s)",
-                     status.pool_start, status.pool_end)
+            log.info("DHCP server already disabled")
             return status
 
-        if enabled:
-            return self.set_dhcp_pool(_DEFAULT_POOL_START, _DEFAULT_POOL_END)
-        else:
-            # Must delete all static leases first — router rejects pool
-            # shrink if any static IP falls outside the new range.
-            self.navigate()
-            leases = self.list_leases()
-            if leases:
-                log.info("Deleting %d static leases before disabling DHCP", len(leases))
-                deleted = self.delete_all()
-                if deleted > 0:
-                    self.apply()
-                    settle(8.0)
-            return self.set_dhcp_pool(_DISABLED_IP, _DISABLED_IP)
+        # Click the toggle div
+        log.info("Clicking DHCP toggle to %s", "enable" if enabled else "disable")
+        self._session.execute(
+            """
+            var el = document.getElementById("dhcp_server_enabled");
+            if (!el) throw new Error("dhcp_server_enabled toggle not found");
+            el.click();
+            """
+        )
+        settle()
+        self.apply()
+        settle(3.0)
+
+        # Verify
+        verify = self.get_dhcp_server_status()
+        if verify.enabled != enabled:
+            raise FormError(
+                f"DHCP toggle verification failed: expected enabled={enabled}, "
+                f"got enabled={verify.enabled}"
+            )
+
+        log.info("DHCP server %s", "enabled" if enabled else "disabled")
+        return verify
 
     def list_leases(self) -> list[DHCPLease]:
         """Read all current static DHCP leases."""

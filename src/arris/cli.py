@@ -236,7 +236,7 @@ def dhcp_server_enable(ctx: click.Context) -> None:
     with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = DHCPPage(session)
         status = page.set_dhcp_server_enabled(True)
-    console.print(f"[green]DHCP server enabled (verified: {status.enabled})")
+    console.print(f"[green]DHCP server enabled (pool {status.pool_start} - {status.pool_end})")
 
 
 @dhcp_group.command("server-disable")
@@ -261,7 +261,7 @@ def dhcp_server_disable(ctx: click.Context, yes: bool) -> None:
     with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
         page = DHCPPage(session)
         status = page.set_dhcp_server_enabled(False)
-    console.print(f"[green]DHCP server disabled (verified: {status.enabled is False})")
+    console.print("[green]DHCP server disabled")
 
 
 # --- WiFi ---
