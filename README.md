@@ -20,6 +20,7 @@ Andere Firmware-Versionen oder Modelle der ARRIS 950-Familie funktionieren event
 - **WiFi:** SSID lesen/ändern, Status, MAC-Filter auslesen
 - **Firewall:** Status lesen, ein-/ausschalten
 - **DynDNS:** Konfiguration auslesen
+- **Telefon:** Anrufliste (Verlauf), Rufnummern, Telefon-Einstellungen auslesen
 - **Status:** Verbundene Geräte, Router-Info, Event-Log
 - **Deklarativer Modus:** YAML-Datei beschreibt den Soll-Zustand, `kabelbox apply` gleicht ab
 
@@ -52,6 +53,11 @@ kabelbox ddns
 # Router-Info und Event-Log
 kabelbox info
 kabelbox log
+
+# Telefon: Anrufliste, Rufnummern, Einstellungen
+kabelbox phone history
+kabelbox phone numbers
+kabelbox phone settings
 
 # Deklarativ: Soll-Zustand anwenden
 kabelbox apply config.yaml

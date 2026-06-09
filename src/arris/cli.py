@@ -440,6 +440,101 @@ def log_cmd(ctx: click.Context) -> None:
     console.print(table)
 
 
+# --- Phone (Telefon) ---
+
+
+@cli.group("phone")
+def phone_group() -> None:
+    """Telephone menu: call history, numbers, settings."""
+
+
+@phone_group.command("history")
+@click.option("-n", "--limit", default=50, help="Max entries to show")
+@click.pass_context
+def phone_history(ctx: click.Context, limit: int) -> None:
+    """Show the phone call history / log."""
+    from .pages.phone import PhoneCallLogPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = PhoneCallLogPage(session)
+        page.navigate()
+        entries = page.get_entries()
+
+    if not entries:
+        console.print("[yellow]No call log entries found")
+        return
+
+    table = Table(title="Call History")
+    table.add_column("Date", style="dim")
+    table.add_column("Time", style="dim")
+    table.add_column("Direction")
+    table.add_column("Number", style="cyan")
+    table.add_column("Duration", justify="right")
+
+    colors = {"incoming": "green", "outgoing": "blue", "missed": "red"}
+    for e in entries[:limit]:
+        dir_text = f"[{colors[e.direction]}]{e.direction}" if e.direction in colors else (e.direction or "-")
+        table.add_row(e.date or "-", e.time or "-", dir_text, e.number or "-", e.duration or "-")
+
+    console.print(table)
+
+
+@phone_group.command("numbers")
+@click.pass_context
+def phone_numbers(ctx: click.Context) -> None:
+    """List configured phone numbers / SIP accounts."""
+    from .pages.phone import PhoneNumbersPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = PhoneNumbersPage(session)
+        page.navigate()
+        numbers = page.list_numbers()
+
+    if not numbers:
+        console.print("[yellow]No phone numbers found")
+        return
+
+    table = Table(title="Phone Numbers")
+    table.add_column("Port", justify="right")
+    table.add_column("Number", style="cyan")
+    table.add_column("Status")
+    table.add_column("Registered")
+
+    for n in numbers:
+        state = "[green]yes" if n.registered else "[red]no"
+        table.add_row(str(n.port), n.number, n.status or "-", state)
+
+    console.print(table)
+
+
+@phone_group.command("settings")
+@click.pass_context
+def phone_settings(ctx: click.Context) -> None:
+    """Show phone settings."""
+    from .pages.phone import PhoneSettingsPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = PhoneSettingsPage(session)
+        page.navigate()
+        settings = page.get_settings()
+
+    if not settings:
+        console.print("[yellow]No phone settings found")
+        return
+
+    table = Table(title="Phone Settings")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value")
+
+    for key, val in settings.items():
+        table.add_row(key, str(val))
+
+    console.print(table)
+
+
 # --- DynDNS ---
 
 

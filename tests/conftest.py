@@ -1,6 +1,11 @@
 """Test fixtures."""
 
 import pytest
+from dotenv import load_dotenv
+
+# Load .env so integration tests pick up KABELBOX_PASSWORD / KABELBOX_HOST
+# without the caller having to export them manually.
+load_dotenv()
 
 
 @pytest.fixture
