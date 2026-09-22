@@ -10,6 +10,9 @@ from .base import BasePage
 
 log = logging.getLogger(__name__)
 
+_CHANGE_PASSWORD_BUTTON = "input_ChangePassword_24"
+_PASSWORD_POPUP_SAVE = "PAGE_GENERAL_PASSWORD_POPUP_PASSWORD_SAVE"
+
 
 @dataclass
 class WifiStatus:
@@ -125,6 +128,46 @@ class WifiGeneralPage(BasePage):
         log.info("Setting SSID to %r", ssid)
         self._forms.set_input("ssid-input", ssid)
         self.apply()
+
+    def set_password(self, password: str) -> None:
+        """Change the WiFi passphrase and apply."""
+        self._stage_password(password)
+        self.apply()
+
+    def set_ssid_and_password(self, ssid: str, password: str) -> None:
+        """Change SSID and passphrase together, with a single apply.
+
+        Two separate applies would restart the radios twice and, between them,
+        broadcast the new name under the old passphrase, which is the state
+        that strands every client trying to join.
+        """
+        log.info("Setting SSID to %r and changing the passphrase", ssid)
+        self._forms.set_input("ssid-input", ssid)
+        self._stage_password(password)
+        self.apply()
+
+    def _stage_password(self, password: str) -> None:
+        """Enter a new passphrase through the change-password popup.
+
+        The visible field (password_24g_encrypt) is read-only; the router only
+        takes a new passphrase through the popup behind the change-password
+        button, which asks for it twice and has its own Save before the
+        page-level Apply. The field ids are misleading on this firmware:
+        password_24g is the show-password checkbox, not the passphrase.
+        """
+        # WPA2 takes either a passphrase of 8 to 63 characters or the raw PSK
+        # as exactly 64 hex digits. The raw form is derived from passphrase and
+        # SSID together, so it only works under the SSID it was derived for.
+        is_raw_psk = len(password) == 64 and all(c in "0123456789abcdefABCDEF" for c in password)
+        if not (8 <= len(password) <= 63 or is_raw_psk):
+            raise ValueError("A WPA2 key is 8 to 63 characters, or 64 hex digits")
+        log.info("Changing the WiFi passphrase")
+        self._forms.click_button(_CHANGE_PASSWORD_BUTTON)
+        self._forms.wait_popup_open(_PASSWORD_POPUP_SAVE)
+        self._forms.set_input("newPassword", password)
+        self._forms.set_input("confirmPassword", password)
+        self._forms.click_button(_PASSWORD_POPUP_SAVE)
+        self._forms.wait_popup_close(_PASSWORD_POPUP_SAVE)
 
     def get_raw_config(self) -> dict:
         """Read all form fields as raw dict for debugging."""

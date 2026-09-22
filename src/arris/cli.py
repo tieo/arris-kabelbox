@@ -29,6 +29,18 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+def _get_wifi_password() -> str:
+    """The new WiFi passphrase, from the environment or a hidden prompt.
+
+    Never a command-line argument: that would leave it in shell history and in
+    the process list for anyone on the machine to read.
+    """
+    env = os.environ.get("KABELBOX_WIFI_PASSWORD")
+    if env:
+        return env
+    return click.prompt("New WiFi passphrase", hide_input=True, confirmation_prompt=True)
+
+
 def _get_password(password: str | None) -> str:
     if password:
         return password
@@ -311,6 +323,43 @@ def wifi_ssid(ctx: click.Context, name: str) -> None:
         page.navigate()
         page.set_ssid(name)
     console.print(f"[green]SSID changed to: {name}")
+
+
+@wifi_group.command("password")
+@click.pass_context
+def wifi_password(ctx: click.Context) -> None:
+    """Change the WiFi passphrase (KABELBOX_WIFI_PASSWORD or prompt)."""
+    from .pages.wifi import WifiGeneralPage
+
+    pw = _get_password(ctx.obj["password"])
+    new = _get_wifi_password()
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = WifiGeneralPage(session)
+        page.navigate()
+        page.set_password(new)
+    console.print("[green]WiFi passphrase changed")
+
+
+@wifi_group.command("set")
+@click.option("--ssid", required=True, help="New network name")
+@click.pass_context
+def wifi_set(ctx: click.Context, ssid: str) -> None:
+    """Change SSID and passphrase together, in one apply.
+
+    Use this rather than `ssid` followed by `password` when both change: in
+    between, the radios would broadcast the new name under the old passphrase.
+    """
+    from .pages.wifi import WifiGeneralPage
+
+    pw = _get_password(ctx.obj["password"])
+    new = _get_wifi_password()
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = WifiGeneralPage(session)
+        page.navigate()
+        page.set_ssid_and_password(ssid, new)
+        page.navigate()
+        status = page.get_status()
+    console.print(f"[green]WiFi now {status.ssid!r}, passphrase set: {status.password_set}")
 
 
 @wifi_group.command("mac-filter")
