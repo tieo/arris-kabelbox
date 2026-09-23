@@ -29,16 +29,16 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-def _get_wifi_password() -> str:
-    """The new WiFi passphrase, from the environment or a hidden prompt.
+def _get_wifi_password(env_name: str = "KABELBOX_WIFI_PASSWORD", prompt: str = "New WiFi passphrase") -> str:
+    """A new WiFi passphrase, from the environment or a hidden prompt.
 
     Never a command-line argument: that would leave it in shell history and in
     the process list for anyone on the machine to read.
     """
-    env = os.environ.get("KABELBOX_WIFI_PASSWORD")
+    env = os.environ.get(env_name)
     if env:
         return env
-    return click.prompt("New WiFi passphrase", hide_input=True, confirmation_prompt=True)
+    return click.prompt(prompt, hide_input=True, confirmation_prompt=True)
 
 
 def _get_password(password: str | None) -> str:
@@ -301,10 +301,16 @@ def wifi_status(ctx: click.Context) -> None:
     table.add_column("Value")
 
     table.add_row("Enabled", str(status.enabled))
-    table.add_row("SSID", status.ssid)
+    table.add_row("SSID" if not status.split_ssid else "SSID 2.4 GHz", status.ssid)
+    if status.split_ssid:
+        table.add_row("SSID 5 GHz", status.ssid_5g)
     table.add_row("Split SSID", str(status.split_ssid))
     table.add_row("Band Steering", str(status.band_steering))
+    table.add_row("Broadcast 2.4 / 5 GHz", f"{status.broadcast_24} / {status.broadcast_5}")
     table.add_row("Guest WiFi", str(status.guest_wifi))
+    if status.guest_wifi:
+        table.add_row("Guest SSID", status.guest_ssid)
+        table.add_row("Guest isolation", str(status.guest_isolate))
     table.add_row("Password Set", str(status.password_set))
 
     console.print(table)
@@ -367,6 +373,66 @@ def wifi_set(ctx: click.Context, ssid: str) -> None:
         page.navigate()
         status = page.get_status()
     console.print(f"[green]WiFi now {status.ssid!r}, passphrase set: {status.password_set}")
+
+
+@wifi_group.command("config")
+@click.option("--enable/--disable", "enabled", default=None, help="Turn WiFi on or off")
+@click.option("--split/--no-split", "split_ssid", default=None, help="Separate names per band")
+@click.option("--band-steering/--no-band-steering", default=None)
+@click.option("--broadcast/--hide", "broadcast", default=None, help="Show or hide the network names")
+@click.option("--guest/--no-guest", "guest_wifi", default=None, help="Guest WiFi on or off")
+@click.option("--guest-isolate/--no-guest-isolate", default=None, help="Keep guest devices apart")
+@click.option("--ssid", help="Network name (the 2.4 GHz one when split)")
+@click.option("--ssid-5g", help="5 GHz network name, needs --split")
+@click.option("--guest-ssid", help="Guest network name")
+@click.option("--password", "change_password", is_flag=True,
+              help="Change the passphrase (KABELBOX_WIFI_PASSWORD or prompt)")
+@click.option("--password-5g", "change_password_5g", is_flag=True,
+              help="Change the 5 GHz passphrase when split (KABELBOX_WIFI_PASSWORD_5G or prompt)")
+@click.option("--guest-password", "change_guest_password", is_flag=True,
+              help="Change the guest passphrase (KABELBOX_GUEST_WIFI_PASSWORD or prompt)")
+@click.pass_context
+def wifi_config(ctx: click.Context, change_password: bool, change_password_5g: bool,
+                change_guest_password: bool, **settings) -> None:
+    """Change any WiFi setting, all in one apply, and read the result back.
+
+    Passphrases never go on the command line: each flag reads its own
+    environment variable or prompts.
+    """
+    from .pages.wifi import WifiGeneralPage
+
+    wanted = {k: v for k, v in settings.items() if v is not None}
+    if change_password:
+        wanted["password"] = _get_wifi_password()
+    if change_password_5g:
+        wanted["password_5g"] = _get_wifi_password("KABELBOX_WIFI_PASSWORD_5G", "New 5 GHz passphrase")
+    if change_guest_password:
+        wanted["guest_password"] = _get_wifi_password("KABELBOX_GUEST_WIFI_PASSWORD", "New guest passphrase")
+    if not wanted:
+        raise click.UsageError("nothing to change; see --help")
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = WifiGeneralPage(session)
+        page.navigate()
+        page.configure(**wanted)
+        page.navigate()
+        status = page.get_status()
+
+    # Everything readable is checked against what was asked; passphrases the
+    # page does not reveal are taken as staged once their popup saved.
+    readable = {"enabled": "enabled", "split_ssid": "split_ssid", "band_steering": "band_steering",
+                "guest_wifi": "guest_wifi", "guest_isolate": "guest_isolate", "ssid": "ssid",
+                "ssid_5g": "ssid_5g", "guest_ssid": "guest_ssid"}
+    wrong = [f"{k}: wanted {wanted[k]!r}, router has {getattr(status, f)!r}"
+             for k, f in readable.items() if k in wanted and getattr(status, f) != wanted[k]]
+    if "broadcast" in wanted and (status.broadcast_24, status.broadcast_5) != (wanted["broadcast"],) * 2:
+        wrong.append(f"broadcast: wanted {wanted['broadcast']}, router has {status.broadcast_24} / {status.broadcast_5}")
+    ctx.invoke(wifi_status)
+    if wrong:
+        for line in wrong:
+            console.print(f"[red]{line}")
+        raise SystemExit(1)
 
 
 @wifi_group.command("mac-filter")
