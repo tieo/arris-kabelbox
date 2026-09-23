@@ -322,7 +322,14 @@ def wifi_ssid(ctx: click.Context, name: str) -> None:
         page = WifiGeneralPage(session)
         page.navigate()
         page.set_ssid(name)
-    console.print(f"[green]SSID changed to: {name}")
+        # The router often outlasts the apply wait, so success is read back
+        # from the page rather than assumed from the click.
+        page.navigate()
+        status = page.get_status()
+    if status.ssid != name:
+        console.print(f"[red]SSID is still {status.ssid!r}, not {name!r}")
+        raise SystemExit(1)
+    console.print(f"[green]SSID is now: {status.ssid}")
 
 
 @wifi_group.command("password")
