@@ -57,6 +57,11 @@ kabelbox log
 # Kabelverbindung: gebundene Kanäle, Pegel, WAN-Adresse (Exit-Code 1 ohne Signal)
 kabelbox docsis
 
+# Komplette Konfiguration sichern (Datei nur für den Besitzer lesbar, enthält WLAN-Passwörter)
+kabelbox export router-backup.yaml
+# ... und nach einem Werksreset alles wieder einspielen
+kabelbox apply router-backup.yaml
+
 # Telefon: Anrufliste, Rufnummern, Einstellungen
 kabelbox phone history
 kabelbox phone numbers

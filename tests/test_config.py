@@ -110,3 +110,24 @@ port_forwarding:
         config = load_config(path)
         rule = config.port_forwarding[0].to_model()
         assert rule.lan_port == 80
+
+
+def test_full_export_shape_loads(tmp_path):
+    from arris.config import load_config
+
+    p = tmp_path / "router.yaml"
+    p.write_text(
+        "port_forwarding:\n"
+        "- {name: Games, protocol: UDP, wan_port: 3000, lan_port: 3000, lan_ip: 192.0.2.9,"
+        " wan_port_end: 3010, lan_port_end: 3010, enabled: false}\n"
+        "dhcp_server: {enabled: false, pool_start: 192.0.2.2, pool_end: 192.0.2.250}\n"
+        "wifi: {ssid: home, guest_wifi: false}\n"
+        "firewall: {enabled: true}\n"
+        "snapshot: {NetGeneral: {switches: {upnp_enable: false}}}\n"
+    )
+    cfg = load_config(p)
+    rule = cfg.port_forwarding[0].to_model()
+    assert rule.is_range and rule.lan_port_end == 3010 and not rule.enabled
+    assert cfg.dhcp_server.enabled is False
+    assert cfg.wifi.ssid == "home" and cfg.wifi.password_env == "KABELBOX_WIFI_PASSWORD"
+    assert cfg.firewall.enabled

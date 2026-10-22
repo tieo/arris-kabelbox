@@ -66,6 +66,26 @@ def cli(ctx: click.Context, verbose: bool, host: str, password: str | None, no_h
     ctx.obj["headless"] = not no_headless
 
 
+def _wifi_passphrases(config) -> tuple[str | None, str | None, str | None]:
+    """Main, 5 GHz and guest passphrase for apply: each from its environment
+    variable, else from the snapshot an export recorded, else None (left as
+    the router has it). The router shows every passphrase in cleartext in a
+    hidden <band>_clr field of WifiGeneral, which is what export saved."""
+    w = config.wifi
+    saved = ((config.snapshot or {}).get("WifiGeneral") or {}).get("fields") or {}
+
+    def from_snapshot(key: str) -> str | None:
+        v = saved.get(key)
+        v = v.get("hidden") if isinstance(v, dict) else v
+        return v or None
+
+    return (
+        os.environ.get(w.password_env) or from_snapshot("password_24g_clr"),
+        os.environ.get(w.password_5g_env) or from_snapshot("password_5g_clr"),
+        os.environ.get(w.guest_password_env) or from_snapshot("password_guest_clr"),
+    )
+
+
 # --- Port Forwarding ---
 
 
@@ -756,6 +776,29 @@ def apply_cmd(ctx: click.Context, config_file: str, dry_run: bool) -> None:
             console.print(f"\n[cyan]DHCP reservations ({len(desired_dhcp)} leases):")
             for l in desired_dhcp:
                 console.print(f"  {l.name}: {l.mac} -> {l.ip}")
+        if config.dhcp_server:
+            d = config.dhcp_server
+            console.print(f"\n[cyan]DHCP server: {'on' if d.enabled else 'off'}, pool {d.pool_start} - {d.pool_end}")
+        if config.wifi:
+            w = config.wifi
+            console.print(f"\n[cyan]WiFi: {w.model_dump(exclude={'password_env', 'password_5g_env', 'guest_password_env'})}")
+            set_pws = [n for n, v in zip(("main", "5 GHz", "guest"), _wifi_passphrases(config)) if v]
+            console.print(f"  passphrases set: {', '.join(set_pws) or 'none, they stay as they are'}")
+        if config.firewall:
+            console.print(f"\n[cyan]Firewall: {'on' if config.firewall.enabled else 'off'}")
+        if config.snapshot:
+            from .pages.snapshot import restore_all
+
+            console.print("\n[cyan]Snapshot settings that differ on the router now:")
+            pw = _get_password(ctx.obj["password"])
+            with RouterSession(host, pw, headless=ctx.obj["headless"]) as session:
+                diff = restore_all(session, config.snapshot, dry_run=True)
+            for mid, changes in diff.items():
+                console.print(f"  [cyan]{mid}[/]")
+                for c in changes:
+                    console.print(f"    {c}")
+            if not diff:
+                console.print("  none")
         return
 
     pw = _get_password(ctx.obj["password"])
@@ -788,7 +831,141 @@ def apply_cmd(ctx: click.Context, config_file: str, dry_run: bool) -> None:
                 for err in result["errors"]:
                     console.print(f"  [red]Error: {err}")
 
+        if config.dhcp_server:
+            from .pages.dhcp import DHCPPage
+
+            console.print("\n[bold]Setting the DHCP server...[/bold]")
+            d = config.dhcp_server
+            page = DHCPPage(session)
+            page.navigate()
+            current = page.get_dhcp_server_status()
+            if (current.pool_start, current.pool_end) != (d.pool_start, d.pool_end):
+                page.set_dhcp_pool(d.pool_start, d.pool_end)
+            if current.enabled != d.enabled:
+                page.set_dhcp_server_enabled(d.enabled)
+            console.print("  ok")
+
+        if config.wifi:
+            from .pages.wifi import WifiGeneralPage
+
+            console.print("\n[bold]Setting WiFi...[/bold]")
+            w = config.wifi
+            pw_main, pw_5g, pw_guest = _wifi_passphrases(config)
+            page = WifiGeneralPage(session)
+            page.navigate()
+            page.configure(
+                enabled=w.enabled, split_ssid=w.split_ssid, band_steering=w.band_steering,
+                guest_wifi=w.guest_wifi, guest_isolate=w.guest_isolate if w.guest_wifi else None,
+                ssid=w.ssid, ssid_5g=w.ssid_5g if w.split_ssid else None,
+                broadcast=w.broadcast, guest_ssid=w.guest_ssid if w.guest_wifi else None,
+                password=pw_main,
+                password_5g=pw_5g if w.split_ssid else None,
+                guest_password=pw_guest if w.guest_wifi else None,
+            )
+            console.print("  ok")
+
+        if config.firewall:
+            from .pages.firewall import FirewallPage
+
+            console.print("\n[bold]Setting the firewall...[/bold]")
+            page = FirewallPage(session)
+            page.navigate()
+            page.set_enabled(config.firewall.enabled)
+            console.print("  ok")
+
+        if config.snapshot:
+            from .pages.snapshot import restore_all
+
+            console.print("\n[bold]Restoring the remaining settings from the snapshot...[/bold]")
+            for mid, changes in restore_all(session, config.snapshot, dry_run=False).items():
+                console.print(f"  [cyan]{mid}[/]")
+                for c in changes:
+                    console.print(f"    {c}")
+
     console.print("\n[green]Done!")
+
+
+# --- Export ---
+
+
+@cli.command("export")
+@click.argument("output", type=click.Path(dir_okay=False, writable=True))
+@click.pass_context
+def export_cmd(ctx: click.Context, output: str) -> None:
+    """Write the router's whole configuration to a YAML file.
+
+    The sections apply knows (port_forwarding, dhcp_reservations, dhcp_server,
+    wifi, firewall) come out in their structured form. Everything else the
+    menu shows lands under `snapshot`, page by page, which apply writes back
+    field by field after the structured sections.
+    The file is created readable by its owner only, since the snapshot can
+    carry credentials (DynDNS, telephony).
+    """
+    import yaml
+
+    from .pages.dhcp import DHCPPage
+    from .pages.firewall import FirewallPage
+    from .pages.port_forwarding import PortForwardingPage
+    from .pages.snapshot import snapshot_all
+    from .pages.wifi import WifiGeneralPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = PortForwardingPage(session)
+        page.navigate()
+        rules = page.list_rules()
+
+        dhcp = DHCPPage(session)
+        dhcp.navigate()
+        leases = dhcp.list_leases()
+        server = dhcp.get_dhcp_server_status()
+
+        wifi_page = WifiGeneralPage(session)
+        wifi_page.navigate()
+        wifi = wifi_page.get_status()
+
+        fw_page = FirewallPage(session)
+        fw_page.navigate()
+        firewall = fw_page.get_status()
+
+        snapshot = snapshot_all(session)
+
+    def rule(r) -> dict:
+        d = {"name": r.name, "protocol": r.protocol, "wan_port": r.wan_port,
+             "lan_port": r.lan_port, "lan_ip": r.lan_ip}
+        if r.is_range:
+            d["wan_port_end"] = r.wan_port_end
+            d["lan_port_end"] = r.effective_lan_end
+        if not r.enabled:
+            d["enabled"] = False
+        return d
+
+    wifi_out = {
+        "enabled": wifi.enabled, "ssid": wifi.ssid, "split_ssid": wifi.split_ssid,
+        "band_steering": wifi.band_steering, "broadcast": wifi.broadcast_24 and wifi.broadcast_5,
+        "guest_wifi": wifi.guest_wifi, "guest_isolate": wifi.guest_isolate,
+    }
+    if wifi.split_ssid:
+        wifi_out["ssid_5g"] = wifi.ssid_5g
+    if wifi.guest_ssid:
+        wifi_out["guest_ssid"] = wifi.guest_ssid
+
+    data = {
+        "host": ctx.obj["host"],
+        "port_forwarding": [rule(r) for r in rules],
+        "dhcp_reservations": [{"name": l.name, "mac": l.mac, "ip": l.ip} for l in leases],
+        "dhcp_server": {"enabled": server.enabled, "pool_start": server.pool_start,
+                        "pool_end": server.pool_end},
+        "wifi": wifi_out,
+        "firewall": {"enabled": firewall.enabled},
+        "snapshot": snapshot,
+    }
+
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True, width=120)
+    console.print(f"[green]Wrote {output}[/]: {len(rules)} port rules, {len(leases)} reservations, "
+                  f"{len(snapshot)} pages in the snapshot")
 
 
 # --- Restart ---
