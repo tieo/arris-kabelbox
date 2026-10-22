@@ -54,6 +54,9 @@ kabelbox ddns
 kabelbox info
 kabelbox log
 
+# Kabelverbindung: gebundene Kanäle, Pegel, WAN-Adresse (Exit-Code 1 ohne Signal)
+kabelbox docsis
+
 # Telefon: Anrufliste, Rufnummern, Einstellungen
 kabelbox phone history
 kabelbox phone numbers
