@@ -511,6 +511,53 @@ def status_cmd(ctx: click.Context) -> None:
     console.print(table)
 
 
+# --- DOCSIS ---
+
+
+@cli.command("docsis")
+@click.option("--all", "show_all", is_flag=True, help="List every channel, also unlocked ones")
+@click.pass_context
+def docsis_cmd(ctx: click.Context, show_all: bool) -> None:
+    """Show cable sync: locked channels, signal levels and the WAN address.
+
+    Exits 1 when the modem has no cable connection, so scripts can alert on it.
+    """
+    from .pages.status import DocsisPage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = DocsisPage(session)
+        page.navigate()
+        st = page.get_status()
+
+    ds_locked = sum(c.locked for c in st.downstream)
+    us_locked = sum(c.locked for c in st.upstream)
+    state = "[green]online" if st.online else "[red]NO CABLE CONNECTION"
+    console.print(f"{state}[/]  WAN IPv4 {st.wan_ipv4 or '-'}  "
+                  f"downstream {ds_locked}/{len(st.downstream)} locked  "
+                  f"upstream {us_locked}/{len(st.upstream)} ranged")
+
+    for title, chans, snr in (("Downstream", st.downstream, True), ("Upstream", st.upstream, False)):
+        shown = chans if show_all else [c for c in chans if c.locked]
+        if not shown:
+            continue
+        table = Table(title=title)
+        for col in ("ID", "Type", "MHz", "Modulation", "Power"):
+            table.add_column(col)
+        if snr:
+            table.add_column("SNR dB")
+        table.add_column("Status")
+        for c in shown:
+            cells = [c.channel_id, c.channel_type, c.frequency_mhz, c.modulation, c.power]
+            if snr:
+                cells.append(c.snr_db)
+            table.add_row(*cells, c.status)
+        console.print(table)
+
+    if not st.online:
+        ctx.exit(1)
+
+
 # --- Info ---
 
 

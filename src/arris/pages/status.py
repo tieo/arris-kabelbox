@@ -124,3 +124,75 @@ class OverviewPage(BasePage):
     def get_connected_devices(self) -> list[ConnectedDevice]:
         """Same as StatusPage but from the overview."""
         return StatusPage(self._session).get_connected_devices()
+
+
+@dataclass
+class DocsisChannel:
+    channel_id: str
+    channel_type: str  # "SC-QAM", "OFDM", "OFDMA"
+    frequency_mhz: str
+    modulation: str
+    power: str  # dBmV/dBµV as the router reports it
+    snr_db: str  # downstream only; empty for upstream
+    status: str  # downstream lock status, upstream ranging status
+
+    @property
+    def locked(self) -> bool:
+        return self.status.strip().upper() in ("JA", "YES", "LOCKED", "SUCCESS", "COMPLETED")
+
+
+@dataclass
+class DocsisStatus:
+    downstream: list[DocsisChannel]
+    upstream: list[DocsisChannel]
+    wan_ipv4: str
+
+    @property
+    def online(self) -> bool:
+        return any(c.locked for c in self.downstream) and self.wan_ipv4 not in ("", "0.0.0.0")
+
+
+# Both channel tables carry a header row followed by one row per channel, each
+# cell a <th>. Returns null until the downstream table has been filled in.
+_SCRAPE_DOCSIS_JS = """
+function rows(id) {
+    var t = document.getElementById(id);
+    if (!t) return null;
+    var out = [];
+    for (var r = 1; r < t.rows.length; r++) {
+        var cells = t.rows[r].cells, row = [];
+        for (var c = 0; c < cells.length; c++) row.push(cells[c].textContent.trim());
+        out.push(row);
+    }
+    return out;
+}
+var ds = rows("dsTable");
+if (!ds || ds.length === 0) return null;
+var m = document.body.innerText.match(/WAN-IPv4[^:]*:\\s*([\\d.]+)/);
+return {ds: ds, us: rows("usTable") || [], wan: m ? m[1] : ""};
+"""
+
+
+class DocsisPage(BasePage):
+    """Cable modem sync: downstream and upstream channels and the WAN address."""
+
+    PAGE_MID = "StatusDocsis"
+
+    def get_status(self) -> DocsisStatus:
+        driver = self._session.driver
+        raw = WebDriverWait(driver, self._session._page_timeout).until(
+            lambda d: d.execute_script(_SCRAPE_DOCSIS_JS)
+        )
+
+        def channel(row: list[str], downstream: bool) -> DocsisChannel:
+            row = row + [""] * (7 - len(row))
+            if downstream:
+                return DocsisChannel(*row[:7])
+            # Upstream has no SNR column: id, type, freq, modulation, power, ranging.
+            return DocsisChannel(row[0], row[1], row[2], row[3], row[4], "", row[5])
+
+        return DocsisStatus(
+            downstream=[channel(r, True) for r in raw["ds"]],
+            upstream=[channel(r, False) for r in raw["us"]],
+            wan_ipv4=raw["wan"],
+        )
