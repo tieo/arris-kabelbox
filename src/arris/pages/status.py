@@ -138,7 +138,7 @@ class DocsisChannel:
 
     @property
     def locked(self) -> bool:
-        return self.status.strip().upper() in ("JA", "YES", "LOCKED", "SUCCESS", "COMPLETED")
+        return self.status.strip().upper() in ("JA", "YES", "LOCKED", "SUCCESS", "ERFOLGREICH", "COMPLETED")
 
 
 @dataclass

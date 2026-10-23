@@ -103,10 +103,12 @@ _RESTORE_SKIP = {"NetPortMapping", "WifiGeneral", "SettingsPassword", "Overview"
 # them, then selects (also the hidden ones behind Chosen widgets), then
 # visible editable inputs and checkboxes. Fields saved under a positional
 # key ("#3") have no stable identity and are left out, as is anything that
-# names a password.
+# names a password. "Add..." selects only pick the device an add-form
+# pre-fills, and their options follow whatever is connected, so they are not
+# settings either.
 _RESTORE_JS = """
 var saved = arguments[0], dry = arguments[1], changes = [];
-function skip(key) { return key.charAt(0) === "#" || /pass|pwd|psk/i.test(key); }
+function skip(key) { return key.charAt(0) === "#" || /pass|pwd|psk/i.test(key) || /^Add/.test(key); }
 function plain(v) { return (v && typeof v === "object" && "hidden" in v) ? v.hidden : v; }
 
 Object.keys(saved.switches || {}).forEach(function (id) {

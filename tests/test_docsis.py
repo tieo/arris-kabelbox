@@ -18,3 +18,8 @@ def test_locked_channel_without_wan_address_is_offline():
 def test_locked_channel_with_wan_address_is_online():
     st = DocsisStatus(downstream=[chan("NEIN"), chan("Ja")], upstream=[], wan_ipv4="203.0.113.7")
     assert st.online
+
+
+def test_upstream_reports_ranging_in_german():
+    assert chan("Erfolgreich").locked
+    assert not chan("Fehler").locked

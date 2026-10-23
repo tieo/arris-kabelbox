@@ -10,10 +10,6 @@ from .base import BasePage
 
 log = logging.getLogger(__name__)
 
-_CHANGE_PASSWORD_BUTTON = "input_ChangePassword_24"
-_PASSWORD_POPUP_SAVE = "PAGE_GENERAL_PASSWORD_POPUP_PASSWORD_SAVE"
-
-
 # The on/off switches on this page are not inputs but divs whose class carries
 # the state, "button button-on" or "button button-off"; clicking one flips it.
 _SWITCHES = {
@@ -54,8 +50,8 @@ class WifiGeneralPage(BasePage):
     Controls on the page (ids verified against the firmware):
     - switches, see _SWITCHES
     - ssid-input / ssid-input3 / ssid-input-guest: network names
-    - input_ChangePassword_24 opens the passphrase popup; the 5 GHz and guest
-      buttons repeat or pad that id, so they are found by their visible row
+    - password_24g_clr / password_5g_clr / password_guest_clr: hidden
+      cleartext passphrases, the values Apply sends
     - applyButton / cancelButton
     """
 
@@ -147,13 +143,21 @@ class WifiGeneralPage(BasePage):
             self._forms.set_input(_SSID_5, ssid_5g)
         if guest_ssid is not None:
             self._forms.set_input(_SSID_GUEST, guest_ssid)
-        if password is not None:
-            self._stage_password(password)
-        if password_5g is not None:
-            self._stage_password(password_5g, row="5")
-        if guest_password is not None:
-            self._stage_password(guest_password, row="guest")
+        # The popup will not save a passphrase equal to the current one, and
+        # re-entering it would only restart the radios, so unchanged ones are
+        # left alone.
+        for value, row in ((password, "24"), (password_5g, "5"), (guest_password, "guest")):
+            if value is not None and value != self.current_password(row):
+                self._stage_password(value, row=row)
         self.apply()
+
+    def current_password(self, row: str = "24") -> str:
+        """The passphrase the router holds now, from the hidden cleartext field
+        the page keeps for its show-password checkbox."""
+        field = {"24": "password_24g_clr", "5": "password_5g_clr", "guest": "password_guest_clr"}[row]
+        return self._session.execute(
+            "var el = document.getElementById(arguments[0]); return el ? el.value : '';", field
+        ) or ""
 
     def get_ssid(self) -> str:
         """Get the current SSID name.
@@ -204,15 +208,15 @@ class WifiGeneralPage(BasePage):
         self.apply()
 
     def _stage_password(self, password: str, row: str = "24") -> None:
-        """Enter a new passphrase through the change-password popup.
+        """Stage a new passphrase for the next Apply.
 
-        The visible field (password_24g_encrypt) is read-only; the router only
-        takes a new passphrase through the popup behind the change-password
-        button, which asks for it twice and has its own Save before the
-        page-level Apply. The field ids are misleading on this firmware:
-        password_24g is the show-password checkbox, not the passphrase, and
-        the 5 GHz and guest buttons share or pad their ids, so the button is
-        taken as the visible one whose id names the row.
+        The page sends whatever the hidden cleartext field (password_24g_clr,
+        password_5g_clr, password_guest_clr) holds when Apply runs; the
+        change-password popup only copies its input into that field. The popup
+        also refuses anything its own strength score rates weak, a rule the
+        firmware enforces only in the browser, which after a factory reset
+        would block restoring the passphrase every device already knows. So
+        the field is written directly, with WPA2's own limits checked here.
         """
         # WPA2 takes either a passphrase of 8 to 63 characters or the raw PSK
         # as exactly 64 hex digits. The raw form is derived from passphrase and
@@ -221,28 +225,13 @@ class WifiGeneralPage(BasePage):
         if not (8 <= len(password) <= 63 or is_raw_psk):
             raise ValueError("A WPA2 key is 8 to 63 characters, or 64 hex digits")
         log.info("Changing the %s WiFi passphrase", {"24": "main", "5": "5 GHz", "guest": "guest"}[row])
-        if row == "24":
-            self._forms.click_button(_CHANGE_PASSWORD_BUTTON)
-        else:
-            clicked = self._session.execute(
-                """
-                var buttons = document.querySelectorAll("input[id*='input_ChangePassword_']");
-                for (var i = 0; i < buttons.length; i++) {
-                    var b = buttons[i];
-                    if (b.id.trim() === "input_ChangePassword_" + arguments[0] &&
-                        b.getBoundingClientRect().height > 0) { b.click(); return true; }
-                }
-                return false;
-                """,
-                row,
-            )
-            if not clicked:
-                raise RuntimeError(f"no visible change-password button for {row}; is that network on?")
-        self._forms.wait_popup_open(_PASSWORD_POPUP_SAVE)
-        self._forms.set_input("newPassword", password)
-        self._forms.set_input("confirmPassword", password)
-        self._forms.click_button(_PASSWORD_POPUP_SAVE)
-        self._forms.wait_popup_close(_PASSWORD_POPUP_SAVE)
+        field = {"24": "password_24g_clr", "5": "password_5g_clr", "guest": "password_guest_clr"}[row]
+        if not self._session.execute(
+            "var el = document.getElementById(arguments[0]); if (!el) return false;"
+            " el.value = arguments[1]; return true;",
+            field, password,
+        ):
+            raise RuntimeError(f"no {field} field on the WiFi page")
 
     def get_raw_config(self) -> dict:
         """Read all form fields as raw dict for debugging."""
