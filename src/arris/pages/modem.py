@@ -19,7 +19,8 @@ class ModemModePage(BasePage):
     In bridge mode the station only passes the cable connection through on
     LAN port 1: its other LAN ports, its wifi, DHCP server and firewall stop,
     and the router behind port 1 gets the public address. The station reboots
-    to change mode. The page only exists in the menu where the line allows a
+    to change mode, and in bridge mode its own pages answer only over a LAN
+    cable at the modem address the page names (pass that as the host). The page only exists in the menu where the line allows a
     modem mode (a dual-stack line with a public IPv4 address).
     """
 
@@ -53,11 +54,23 @@ class ModemModePage(BasePage):
             return None
 
         log.warning("Switching the station to %s mode", mode)
-        # A real click on the radio, so the page's own handlers run.
-        self._session.driver.find_element("id", _RADIOS[mode]).click()
+        # The input itself is hidden behind the page's styled radio, so the
+        # click goes to what the user sees: its label, else its container.
+        self._session.execute(
+            """
+            var el = document.getElementById(arguments[0]);
+            var target = document.querySelector("label[for='" + arguments[0] + "']") || el.parentElement;
+            target.click();
+            if (!el.checked) { el.click(); }
+            """,
+            _RADIOS[mode],
+        )
         settle(1)
-        self.apply()
-        settle(2)
+        if self.get_mode() != mode:
+            raise RuntimeError(f"the page did not take the {mode} mode selection")
+        # This page has its own apply button, not the shared applyButton.
+        self._session.execute('document.getElementById("applyButton2").click();')
+        settle(3)
         # The station asks for confirmation before it reboots into the new
         # mode. Confirm the visible dialog; its text goes to the caller.
         return self._session.execute(
