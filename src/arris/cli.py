@@ -968,6 +968,64 @@ def export_cmd(ctx: click.Context, output: str) -> None:
                   f"{len(snapshot)} pages in the snapshot")
 
 
+# --- Operating mode ---
+
+
+@cli.group("mode")
+def mode_group() -> None:
+    """Router or modem-only (bridge) operation."""
+
+
+@mode_group.command("status")
+@click.pass_context
+def mode_status(ctx: click.Context) -> None:
+    """Show whether the station runs as router or in bridge mode."""
+    from .pages.modem import ModemModePage
+
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = ModemModePage(session)
+        page.navigate()
+        console.print(page.get_mode())
+
+
+def _switch_mode(ctx: click.Context, mode: str, yes: bool, warning: str) -> None:
+    from .pages.modem import ModemModePage
+
+    if not yes and not click.confirm(warning):
+        return
+    pw = _get_password(ctx.obj["password"])
+    with RouterSession(ctx.obj["host"], pw, headless=ctx.obj["headless"]) as session:
+        page = ModemModePage(session)
+        page.navigate()
+        if page.get_mode() == mode:
+            console.print(f"Already in {mode} mode")
+            return
+        dialog = page.set_mode(mode)
+    if dialog:
+        console.print(f"[dim]Confirmed: {dialog}")
+    console.print(f"[yellow]Station is rebooting into {mode} mode")
+
+
+@mode_group.command("bridge")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def mode_bridge(ctx: click.Context, yes: bool) -> None:
+    """Switch to bridge mode: only LAN port 1 stays, carrying the public address."""
+    _switch_mode(
+        ctx, "bridge", yes,
+        "Bridge mode stops the wifi and LAN ports 2-4, and the station reboots. Continue?",
+    )
+
+
+@mode_group.command("router")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def mode_router(ctx: click.Context, yes: bool) -> None:
+    """Switch back to router mode."""
+    _switch_mode(ctx, "router", yes, "The station reboots into router mode. Continue?")
+
+
 # --- Restart ---
 
 
